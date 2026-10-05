@@ -323,6 +323,48 @@ pagination.on_click(...)
 
 实测结果：**16/16 PASS**。
 
+### 4.5 反向落地：`chapterskip.lua` 已切换到本模块 ✅（2026-10-05）
+
+§4.2 吸收项 1 说的「改掉两处分别重算 `button_x/button_y`」**已真正执行** ——
+不是停留在建议，而是把 `chapterskip.lua` 的按钮整体换成了 `osd-button`。
+
+**旧实现的两个根因**（比 §4.2 当时的判断更具体）：
+
+| 层次 | 问题 |
+|------|------|
+| 时序 | 命中判定读 `button_state.mouse_hover`，该布尔值虽在同一次 `render` 内算出，却隐含依赖「render 一定先于判定」。鼠标事件早于 render 时（show 后立刻点击、`osd-dimensions` 未就绪）读到的就是上一帧陈旧值 |
+| 度量 | 文字宽度按 `#message * font_size * 0.6` 估算，与实际字体度量不符时绘制与判定各偏一次，且**无处对账** |
+
+**改造结果**：
+
+- 删除 **131 行**内联几何计算（`button_x/y/width/height`、`scale`、`0.6` 估算全部消失）
+- 几何计算唯一化进模块：渲染写 `self._hit_rect`，命中只读它 —— 全项目**再无第二处按钮坐标计算**
+- 点击改调 `prompt_button:on_mouse_click(x, y)`
+- 删除裸的 `mouse-pos` observer（原每次鼠标移动都全量 render），悬停改由模块内共享订阅驱动
+- 按钮实例复用（非每次 `new`），`on_unload` 增加 `:destroy()`
+
+**度量提升**：`chapterskip.lua` 净减约 90 行（-177/+... 见提交），代码量变化：
+
+```
+script-modules/osd-button.lua         |  78 +++++++--   (扩展进度条支持)
+scripts/chapterskip.lua               | 288 ++++++++++++++--------------------
+tools/osd-button-drift-regression.lua |  67 ++++++++
+```
+
+**新增回归测试 `tools/osd-button-drift-regression.lua`**：把隐患变成可复现的断言。
+构造「绘制发生在 1080p、判定时屏幕已切到 4K」的场景对照：
+
+```
+[旧] 绘制矩形 x=1647.2 y=862.0   判定矩形 x=3294.4 y=1724.0
+[旧] 坐标漂移 dx=1647.2 dy=862.0  ← 两者不自洽
+[旧] 点在按钮中心 → 未命中           ← 应命中却漏判（看得见点不着）
+[新] 判定读同一份 → 命中 ✅
+```
+
+**为进度条扩展了模块**：`set_progress(p)` + `progress_fg/progress_bg` 三态联动配色。
+进度**只影响填充宽度**，不影响按钮尺寸与位置 —— 所以不会引起抖动，也无需重新布局。
+六参双半径 `round_rect_cw(x0,y0,x1,y1,r,0)` 沿用原 `chapterskip.lua:462` 验证过的形式。
+
 ---
 
 ## 5. 集成现状：已接入 ✅（2026-10-05 补全）
