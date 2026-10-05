@@ -26,7 +26,12 @@ local function persist()
     end
     persist_timer = mp.add_timeout(0.2, function()
         persist_timer = nil
-        local path = mp.command_native({"command", "expand-path", CONFIG_FILE})
+        -- 2026-10-05 修正：原写法 {"command", "expand-path", ...} 是错的。
+        --   mp.command_native 要求**命令名直接作为第一个元素**，
+        --   多包一层 "command" 会返回 nil（mpv 会报 "Command 'command' not found"）。
+        --   后果：path 恒为 nil → 下一行的守卫直接 return → 配置持久化**静默失效**。
+        --   已在真机验证：错误写法返回 nil，正确写法返回展开后的路径字符串。
+        local path = mp.command_native({"expand-path", CONFIG_FILE})
         if not path or path == "" then return end
         local tmp_path = path .. ".tmp"
         local json_str = utils.format_json(runtime_data)
@@ -52,7 +57,8 @@ end
 -- load: 读取持久化文件到内存表；文件不存在或解析失败时静默返回空表
 function M.load()
     runtime_data = {}
-    local path = mp.command_native({"command", "expand-path", CONFIG_FILE})
+    -- 2026-10-05 修正：同 persist()，去掉多余的 "command" 前缀
+    local path = mp.command_native({"expand-path", CONFIG_FILE})
     if not path or path == "" then return end
     local f = io.open(path, "r")
     if not f then return end

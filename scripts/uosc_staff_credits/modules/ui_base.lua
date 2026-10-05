@@ -177,7 +177,9 @@ function M.download_image_with_cache(url, target_w, target_h, opts, callback)
     end
 
     -- b. 路径计算（v1.7: 优先使用 ~~/cache/ 持久化缓存目录，不可写时回退 TEMP）
-    local cache_dir = mp.command_native({"command", "expand-path", "~~/cache"})
+    -- 2026-10-05 修正：去掉多余的 "command" 前缀（原写法返回 nil，
+    --   导致这里**永远走 TEMP 回退分支**，~~/cache 从未被使用）。
+    local cache_dir = mp.command_native({"expand-path", "~~/cache"})
     if type(cache_dir) ~= "string" or cache_dir == "" then
         cache_dir = os.getenv("TEMP") or "/tmp"
     else

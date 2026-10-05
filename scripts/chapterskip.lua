@@ -351,6 +351,17 @@ end
 --   新实现把「算矩形」这件事**唯一化**到 osd-button 内部：
 --   渲染时写入 self._hit_rect，命中判定只读它，不再有第二处计算。
 
+-- 2026-10-05（重要修正）：mpv 的 package.path 默认只含 <mpv根>/lua/?.\
+--   实测得到：package.path = "D:\...\mpv-20260831\lua\?.lua;D:\...\lua\?\init.lua"
+--   也就是说 **script-modules/ 并不在模块搜索路径上** ——
+--   直接 require 'osd-button' 会报 "module 'osd-button' not found"，
+--   导致整个 chapterskip 脚本加载失败（静默失效，非常难察觉）。
+--
+--   正确做法（沿用本项目 scripts/file-browser/main.lua 的既有约定）：
+--   手动把模块目录 prepend 到 package.path。
+--   mp.command_native({"expand-path", ...}) 负责把 ~~ 展开为 mpv 配置目录。
+package.path = mp.command_native({"expand-path", "~~/script-modules"}) .. "/?.lua;" .. package.path
+
 local osd_button = require 'osd-button'
 
 -- 供内联命令（chapterskip-* script-message）查询的按钮对象

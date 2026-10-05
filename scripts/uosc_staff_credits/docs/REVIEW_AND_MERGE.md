@@ -429,7 +429,85 @@ B  script-message-to uosc_staff_credits main-menu   #menu: 工具 > Bangumi 工�
 
 ---
 
+## 7.5 关键机制勘误：`script-modules/` 不在 `package.path` 上 ⚠️
+
+**这是本次最重要的发现，因为它让「语法全过」的代码实际完全无法运行。**
+
+上一轮我把 `chapterskip.lua` 改为 `require 'osd-button'`，指向
+`script-modules/osd-button.lua`。语法检查 **185/185 全过**，但实测启动 mpv 时：
+
+```
+[chapterskip] Lua error: chapterskip.lua:354: module 'osd-button' not found:
+    no field package.preload['osd-button']
+    no file 'D:\...\mpv-20260831\lua\osd-button.lua'
+    no file 'D:\...\mpv-20260831\lua\osd-button\init.lua'
+    no file 'D:\...\mpv-20260831\osd-button.dll'
+```
+
+**实测得到的 `package.path`（在脚本内打印）**：
+
+```
+D:\...\mpv-20260831\lua\?.lua;D:\...\mpv-20260831\lua\?\init.lua
+```
+
+即：mpv 只搜索 **`<mpv 根目录>/lua/`**，`script-modules/` **根本不在搜索路径上**。
+`script-modules/` 只是社区约定（mpv 官方 wiki 建议的放置位置），
+**并非自动可 require**。
+
+**正确做法**（沿用本项目 `scripts/file-browser/main.lua:16` 的既有约定）：
+
+```lua
+-- 把 ~~ 展开为 mpv 配置目录后 prepend 到 package.path
+package.path = mp.command_native({"expand-path", "~~/script-modules"}) .. "/?.lua;" .. package.path
+local osd_button = require 'osd-button'
+```
+
+> **教训**：`loadstring` 语法检查**无法发现模块解析失败** —— 它只解析当前文件的语法，
+> 不会真的执行 `require`。这类「运行期才炸」的问题**必须靠真实启动 mpv 验证**。
+> 静态检查的绿灯不等于能跑。
+
+---
+
 ## 8. 本次已落地的修改（2026-10-05）
+
+### 8.0 uosc 控制栏按钮修正与扩充
+
+**发现一个静默失效的绑定**（`script-opts/uosc.conf` 的 `controls` 行）：
+
+```conf
+# 修正前（错误，且不报错、点了没反应）
+<video>command:people:script-binding uosc_staff-credits/staff-credits?职员表
+```
+
+两处错误：
+
+| 错误 | 说明 |
+|------|------|
+| 脚本名写错 | `uosc_staff-credits`（连字符）vs 实际目录 `uosc_staff_credits`（下划线） |
+| 机制用错 | `script-binding foo/bar` 要求 `bar` 是脚本内 `register_key_binding` 注册的**按键绑定**；而本脚本的对外入口是 **`script-message` 路由**，用 `script-binding` 调不到 |
+
+**正确做法**：本脚本自己已通过 uosc 的 `set-button` 注册了具名按钮
+（`modules/menu.lua:113`），名为 **`staff_credits_main`**（图标 `menu_book`，
+提示「Bangumi 工具箱」）。所以只需引用 `button:staff_credits_main`。
+
+**uosc 的坑**：`lib/buttons.lua:14` 对未注册的按钮名**不报错**，而是返回
+
+```lua
+{icon = 'help_center', tooltip = 'Uninitialized button "' .. name .. '"'}
+```
+
+即：**名字拼错只会显示一个问号图标**，极难察觉。故必须静态比对（见 §8.4 的核验脚本）。
+
+**扩充的业务按钮**（按业务链路新增，均实测可触发）：
+
+| 按钮 | 引用形式 | 对应路由 |
+|------|---------|---------|
+| 职员表 / 主菜单 | `button:staff_credits_main` | `main-menu`（脚本自注册） |
+| 角色介绍 | `command:person_search:script-message-to … character-intro` | `character-intro` |
+| 封面简介 | `command:image_search:script-message-to … cover-intro` | `cover-intro` |
+| 制作评分 | `command:star_rate:script-message-to … staff-credits-production-score` | `staff-credits-production-score` |
+
+> 用 `command:…:script-message-to` 而非 `script-binding`，因为这些是 **script-message 路由**。
 
 ### 8.1 代码修复（3 处）
 
@@ -460,12 +538,63 @@ cd portable_config
 ../luajit.exe tools/lua-syntax-check.lua
 ```
 
-**实测结果：全项目 177 个 .lua 文件，语法 OK 177，FAIL 0。**
+**实测结果：全项目 185 个 .lua 文件，语法 OK 185，FAIL 0。**
 
 其他验证：
 
 - 键位冲突核查：`B` 与 `BS` 不同键，无冲突
 - 路由名核对：`main-menu` 已在 `app/dispatcher.lua:608` 验证存在
 
-> 说明：该检查为**语法解析**（`loadstring`），不执行文件，因此不校验运行时行为。
-> 首次加载仍建议留意 mpv 控制台。
+> ⚠️ **但语法检查有明确的能力边界**：它只解析当前文件，**不执行 `require`**，
+> 因此**发现不了模块解析失败**（§7.5 就是这么踩的坑：185/185 全过，
+> 实际 `chapterskip.lua` 因为 `require 'osd-button'` 失败而**完全无法运行**）。
+> 结论：**语法绿灯 ≠ 能跑，必须真机启动一次**。
+
+### 8.3.1 真机冒烟测试（重要，补语法检查之不足）
+
+```bash
+cd mpv-20260831
+./mpv.exe --vo=null --ao=null --frames=1 --msg-level=all=info "av://lavfi:testsrc=d=1"
+```
+
+用 mpv 内置 lavfi 测试源（无需外部媒体文件），`--vo=null` 便于纯日志验证。
+**判据：日志中不得出现 `Lua error` / `module ... not found` / `traceback`。**
+
+实测修复前的对比：
+
+| 阶段 | `--vo=null` 启动日志 |
+|------|---------------------|
+| 修复前 | `[chapterskip] Lua error: ...: module 'osd-button' not found` ← 脚本整个没加载 |
+| 修复后 | 无 Lua error，chapterskip 正常加载 |
+
+### 8.3.2 业务链路端到端测试
+
+```bash
+./mpv.exe --vo=null --ao=null --script=tools/biz-smoke.lua "av://lavfi:testsrc=d=3"
+```
+
+依次触发 4 个业务路由，确认均被 dispatcher 接收：
+
+```
+[biz] === [1/4] 触发按钮「职员表(主菜单)」→ route=main-menu
+[biz] === [2/4] 触发按钮「角色介绍」→ route=character-intro
+[uosc_staff_credits] [Bangumi 工具箱] 角色介绍 · 加载中...
+[biz] === [3/4] 触发按钮「封面简介」→ route=cover-intro
+[uosc_staff_credits] [Bangumi 工具箱] 封面简介 · 加载中...
+[biz] === [4/4] 触发按钮「制作评分」→ route=staff-credits-production-score
+[uosc_staff_credits] [Bangumi 工具箱] 制作评分 · 加载中...
+```
+
+四个路由全部响应，无 Lua error。（测试图案无番剧数据，故后续网络请求
+自然失败 —— 这属于**预期行为**，不是缺陷。）
+
+### 8.4 静态核验工具（防止按钮名/路由名写错）
+
+uosc 对未注册按钮名会静默降级为 `help_center` 占位图标，故必须静态比对：
+
+```bash
+python tools/uosc-verify-buttons.py   # 核验 controls 里每个 button:NAME 是否真被注册
+python tools/uosc-verify-routes.py    # 核验每个 script-message-to 路由是否真被注册
+```
+
+实测：**button 未注册 0 个，路由未注册 0 个。**
