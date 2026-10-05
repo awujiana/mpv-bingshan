@@ -373,10 +373,8 @@ function M.show(items, title)
     })
 
     -- 注册 OSD observer（osd-width/osd-height 变化时重新 render，仅在 visible 时）
-    M.unregister_osd()
-    M.register_osd_observers(function()
-        if state.visible then render() end
-    end, {"osd-width", "osd-height"}, 100, M.is_visible)
+    -- v1.7.4: 移至 M.init() 一次性注册，避免每次 show() 重复 observe/unobserve 抖动
+    --         （is_visible 门控已保证不可见时不重绘，无需在 show 里重建）
 
     -- 订阅鼠标输入（使用通用组件）
     if deps.input_service then
@@ -436,6 +434,13 @@ local base_init = init
 function M.init(new_opts, new_deps)
     base_init(new_opts, new_deps)
     deps.ui_base.make_panel_module("staff_grid", M)
+
+    -- v1.7.4: OSD observer 一次性注册（原在 show() 内每次重建，造成订阅抖动与防抖定时器泄漏风险）
+    -- 注册后会一直存活，由 is_visible 门控（不可见时不触发 render）
+    M.unregister_osd()
+    M.register_osd_observers(function()
+        if state.visible then render() end
+    end, {"osd-width", "osd-height"}, 100, M.is_visible)
 
     M.set_cleanup(function()
         state.visible = false

@@ -193,10 +193,10 @@ deps.staff_grid.show(deps, items, title)
 
 ### 🟠 P2-3：`register_osd_observers` 每次 `show()` 都重新注册
 
-**证据**：
+**证据**（修复前的原始代码）：
 
 ```lua
--- modules/staff_grid.lua:371-374
+-- modules/staff_grid.lua:375-379（修复前）
 M.unregister_osd()
 M.register_osd_observers(function()
     if state.visible then render() end
@@ -207,8 +207,8 @@ end, {"osd-width", "osd-height"}, 100, M.is_visible)
 且 `ui_base` 内部闭包 `debounce_timer` 每次重建，若上一次的防抖定时器尚未触发，
 旧 `unreg_fn` 虽被调用但其闭包已与新实例解耦——存在**防抖定时器泄漏**的边界风险。
 
-**修复**：把 observer 注册移到 `M.init()` 中一次性完成（`is_visible` 门控已能保证不可见时不重绘），
-`show()` 内只保留 `render()` 调用。
+**状态**：✅ 已修（2026-10-05）—— 移至 `M.init()` 一次性注册。
+`is_visible` 门控已能保证不可见时不重绘，无需在 `show()` 里重建。
 
 ---
 
@@ -339,7 +339,7 @@ B  script-message-to uosc_staff_credits main-menu   #menu: 工具 > Bangumi 工�
 |------|--------|------|------|------|
 | P1-1 | 🔴 高 | `state.hover_button` 未初始化 | `staff_grid.lua:44-55` | ✅ 已修 |
 | P2-2 | 🟠 中 | `show(new_deps,...)` 首参被忽略 | `staff_grid.lua:328` / `staff_credits.lua:104,222` | ✅ 已修 |
-| P2-3 | 🟠 中 | OSD observer 每次 show 重注册 | `staff_grid.lua:371-374` | ⬜ 待修 |
+| P2-3 | 🟠 中 | OSD observer 每次 show 重注册 | `staff_grid.lua:438-443` | ✅ 已修 |
 | P2-4 | 🟠 中 | 关闭按钮无悬停反馈 | `staff_grid.lua:384-395` | ✅ 已修 |
 | P3-5 | 🟡 低 | ui_scale 基准与 chapterskip 不一致 | 全局 | 📄 已记录口径 |
 | P3-6 | 🟡 低 | `osd-button.lua` 尚不存在 | `script-modules/` | ⬜ 待实现 |
@@ -363,7 +363,8 @@ B  script-message-to uosc_staff_credits main-menu   #menu: 工具 > Bangumi 工�
 |------|------|------|
 | `modules/staff_grid.lua:54` | 补 `hover_button = nil` | 原仅在 `show()`/`cleanup` 里赋值，属隐性依赖 |
 | `modules/staff_grid.lua:328` | `show(new_deps, items, title)` → `show(items, title)` | 首参被静默忽略，删除以免误导 |
-| `features/staff_credits.lua:104,222` | 调用同步改为 `show(items, title)` | 与签名对齐 |
+| `feature/staff_credits.lua:104,222` | 调用同步改为 `show(items, title)` | 与签名对齐 |
+| `modules/staff_grid.lua:438-443` | OSD observer 移入 `M.init()` 一次性注册 | 消除订阅抖动与防抖定时器泄漏风险 |
 | `modules/staff_grid.lua:384-395` | `hit_test` 增加 `"close"` 分支 | 使 ✕ 可被识别为悬停目标 |
 | `modules/staff_grid.lua:199-220` | 关闭按钮三态渲染 | 悬停时背景 `3A3940` + 边框 `88C0FC` + 文字 `E06C75` |
 
@@ -377,9 +378,20 @@ B  script-message-to uosc_staff_credits main-menu   #menu: 工具 > Bangumi 工�
 
 ### 8.3 验证方式
 
-- 括号配平机械校验：`staff_grid.lua` / `staff_credits.lua` 均 `OK`
+本机**无需单独安装 Lua** —— 直接复用 mpv 自带的 `luajit.exe`（在 `portable_config` 的上一级，
+即 `mpv.exe` 同目录），配套检查脚本 `tools/lua-syntax-check.lua`。
+
+```bash
+cd portable_config
+../luajit.exe tools/lua-syntax-check.lua
+```
+
+**实测结果：全项目 177 个 .lua 文件，语法 OK 177，FAIL 0。**
+
+其他验证：
+
 - 键位冲突核查：`B` 与 `BS` 不同键，无冲突
 - 路由名核对：`main-menu` 已在 `app/dispatcher.lua:608` 验证存在
 
-> ⚠️ 本机**无 Lua 解释器**（`luac` 不可用），未能做真正的语法解析。
-> 上述校验为静态检查，首次加载请留意 mpv 控制台是否报错。
+> 说明：该检查为**语法解析**（`loadstring`），不执行文件，因此不校验运行时行为。
+> 首次加载仍建议留意 mpv 控制台。
