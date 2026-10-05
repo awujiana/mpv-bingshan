@@ -82,6 +82,12 @@ local DEFAULT_STYLE = {
     border_color    = nil,        -- nil = 不描边
     border_hover    = "88C0FC",
     border_disabled = nil,
+    -- 进度条（可选；progress = nil 时不绘制，保持纯色按钮）
+    progress        = nil,        -- 0..1，左侧已填充比例
+    progress_bg     = "FFFFFF",
+    progress_bg_hover = "111111",
+    progress_fg     = "2442F4",
+    progress_fg_hover = "2442F4",
 }
 
 -- 文字宽度估算系数：ASS 默认字体下，字符平均宽度 ≈ font_size * 0.6。
@@ -235,6 +241,7 @@ function M.new(opts)
     self._visible    = false
     self._enabled    = (opts.enabled ~= false)
     self._hover      = false
+    self._progress   = opts.progress   -- nil = 不画进度条
 
     -- 纪律 3：这是唯一的位置真源。渲染写入，命中读取，永不重算。
     self._hit_rect   = nil
@@ -303,7 +310,20 @@ function Button:set_on_click(fn)
     return self
 end
 
+-- 设置进度（0..1）。传 nil 关闭进度条。
+-- 注意：进度只影响**填充宽度**，不影响按钮尺寸与位置 ——
+-- 所以它不会让按钮抖动，也不需要重新布局。
+function Button:set_progress(p)
+    if p ~= nil then
+        if p < 0 then p = 0 elseif p > 1 then p = 1 end
+    end
+    self._progress = p
+    if self._visible then self:_render() end
+    return self
+end
+
 -- 三态配色解析（吸收项 3：补齐 disabled 态）
+-- 同时解析进度条配色（与三态联动：悬停时换色）
 function Button:_resolve_colors()
     local st = self._style
     if not self._enabled then
@@ -311,18 +331,24 @@ function Button:_resolve_colors()
             bg    = hex_or(st.bg_disabled, st.bg),
             fg    = hex_or(st.fg_disabled, st.fg),
             border = hex_or(st.border_disabled, st.border_color),
+            progress_bg = hex_or(st.progress_bg, st.progress_bg),
+            progress_fg = hex_or(st.progress_fg, st.progress_fg),
         }
     elseif self._hover then
         return {
             bg    = hex_or(st.bg_hover, st.bg),
             fg    = hex_or(st.fg_hover, st.fg),
             border = hex_or(st.border_hover, st.border_color),
+            progress_bg = hex_or(st.progress_bg_hover, st.progress_bg),
+            progress_fg = hex_or(st.progress_fg_hover, st.progress_fg),
         }
     else
         return {
             bg    = st.bg,
             fg    = st.fg,
             border = st.border_color,
+            progress_bg = st.progress_bg,
+            progress_fg = st.progress_fg,
         }
     end
 end
@@ -357,22 +383,52 @@ function Button:_render()
     ass:pos(0, 0)   -- \an7\pos(0,0)：绝对坐标作图模式
     ass:append("{\\an7\\blur0}")
 
-    -- 底板
-    ass:append("{\\bord0\\1c&H" .. c.bg .. "&}")
-    ass:draw_start()
-    ass:round_rect_cw(layout.x, layout.y,
-                      layout.x + layout.w, layout.y + layout.h,
-                      layout.radius)
-    ass:draw_stop()
+    local x0, y0 = layout.x, layout.y
+    local x1, y1 = layout.x + layout.w, layout.y + layout.h
+    local rad = layout.radius
+
+    local has_progress = (self._progress ~= nil)
+    local p = self._progress or 0
+
+    if has_progress then
+        -- 进度条模式：底槽 + 已填充部分，圆角只在两端外侧保留。
+        -- 先把整个底板画成「剩余」色。
+        local bg_c = c.progress_bg or "FFFFFF"
+        ass:append("{\\bord0\\1c&H" .. bg_c .. "&}")
+        ass:draw_start()
+        ass:round_rect_cw(x0, y0, x1, y1, rad)
+        ass:draw_stop()
+
+        -- 再覆盖左侧「已用」部分。
+        -- 圆角规则：左端始终圆；右端只有在填满(>=1)时才圆，
+        -- 否则直切，让进度前沿是一条直线（视觉上更准确）。
+        if p > 0 then
+            local fg_c = c.progress_fg or c.bg
+            local fw = x0 + layout.w * p
+            ass:append("{\\bord0\\1c&H" .. fg_c .. "&}")
+            ass:draw_start()
+            if p >= 1 then
+                ass:round_rect_cw(x0, y0, x1, y1, rad)
+            else
+                -- 左端圆、右端直
+                ass:round_rect_cw(x0, y0, fw, y1, rad, 0)
+            end
+            ass:draw_stop()
+        end
+    else
+        -- 纯色模式：整块底板
+        ass:append("{\\bord0\\1c&H" .. c.bg .. "&}")
+        ass:draw_start()
+        ass:round_rect_cw(x0, y0, x1, y1, rad)
+        ass:draw_stop()
+    end
 
     -- 描边（可选，悬停时出现）
     if c.border and layout.border > 0 then
-        ass:append("{\\1c&H" .. c.border .. "&\\bord" .. layout.border
+        ass:append("{\\bord0\\1c&H" .. c.border .. "&\\bord" .. layout.border
                    .. "\\3c&H" .. c.border .. "&}")
         ass:draw_start()
-        ass:round_rect_cw(layout.x, layout.y,
-                          layout.x + layout.w, layout.y + layout.h,
-                          layout.radius)
+        ass:round_rect_cw(x0, y0, x1, y1, rad)
         ass:draw_stop()
     end
 

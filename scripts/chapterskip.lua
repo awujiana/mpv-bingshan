@@ -334,12 +334,64 @@ local function info(s)
     show_message(s, 2)
 end
 
--- Button UI state
+-- ── 按钮 UI ──────────────────────────────────────────────────────────
+-- 2026-10-05：改用通用件 script-modules/osd-button.lua
+--
+-- 改造原因（原实现存在「重算漂移」）：
+--   旧 render_button() 自己算一遍 button_x/button_y 用于绘制；
+--   命中判定用的却是另存的 button_state.mouse_hover —— 而这个布尔值
+--   又是在**同一次 render 里**用同一批局部变量算出来的，看似同源，
+--   实则依赖「render 一定先于判定发生」。一旦鼠标事件早于 render
+--   （例如 show 后立刻点击、或 osd-dimensions 尚未就绪），
+--   mouse_hover 仍是上一帧的陈旧值 → 出现「看得见点不着」。
+--
+--   更根本的问题是**尺寸估算分散**：文字宽度按 #message * font_size * 0.6
+--   估算，一旦字体度量与估算不符，绘制与判定都会偏，且无处对账。
+--
+--   新实现把「算矩形」这件事**唯一化**到 osd-button 内部：
+--   渲染时写入 self._hit_rect，命中判定只读它，不再有第二处计算。
+
+local osd_button = require 'osd-button'
+
+-- 供内联命令（chapterskip-* script-message）查询的按钮对象
+local prompt_button = nil
+
+-- 保留这些名字以兼容既有调用点（cancel_skip_prompt / show_skip_prompt 等）
+local hide_button
+local render_button
+local bind_button_click
+local unbind_button_click
+
+-- 把 o.* 的按钮样式映射到 osd-button 的 style 表
+local function button_style()
+    return {
+        font_size   = o.button_font_size,
+        padding_x   = o.button_padding_x,
+        padding_y   = o.button_padding_y,
+        margin      = o.button_margin,
+        border      = o.button_border,
+        radius      = o.button_radius,
+        line_spacing = 0.1,
+        -- chapterskip 用进度条模式：底槽=remaining，已用=progress
+        bg          = o.button_remaining_color,
+        bg_hover    = o.button_remaining_hover_color,
+        fg          = o.button_text_color,
+        fg_hover    = o.button_text_hover_color,
+        border_color = o.button_border_color,
+        progress_bg = o.button_remaining_color,
+        progress_bg_hover = o.button_remaining_hover_color,
+        progress_fg = o.button_progress_color,
+        progress_fg_hover = o.button_progress_hover_color,
+    }
+end
+
+-- 旧的全局 button_state 仍被少量外部代码引用（on_unload 等）。
+-- 保留一个只读投影，避免大范围改动调用点。
 local button_state = {
-    overlay = nil,
     visible = false,
     message = "",
     mouse_hover = false,
+    -- 倒计时与动作仍由本脚本维护（osd-button 不关心业务语义）
     countdown_timer = nil,
     countdown_remaining = 0,
     countdown_total = 0,
@@ -347,177 +399,57 @@ local button_state = {
     skip_obj = nil,
 }
 
--- Forward declarations
-local hide_button
-local render_button
-local bind_button_click
-local unbind_button_click
-
--- Initialize button overlay
-local function init_button_overlay()
-    if not button_state.overlay then
-        button_state.overlay = mp.create_osd_overlay("ass-events")
-        if button_state.overlay then
-            button_state.overlay.z = 2000  -- Set high z-index to ensure visibility
-        end
+local function sync_button_state()
+    if prompt_button then
+        button_state.visible = prompt_button:is_visible()
+        button_state.mouse_hover = prompt_button:is_hovered()
+    else
+        button_state.visible = false
+        button_state.mouse_hover = false
     end
 end
 
--- Mouse position helper
-local function is_mouse_in_button(bx, by, bw, bh, mx, my)
-    return mx >= bx and mx <= bx + bw and my >= by and my <= by + bh
+-- 进度计算：与倒计时联动
+local function current_progress()
+    if not o or o.timeout <= 0 then return nil end
+    local total = button_state.countdown_total or 0
+    local rem = button_state.countdown_remaining or 0
+    if total <= 0 then return nil end
+    local p = 1 - (rem / total)
+    if p < 0 then p = 0 elseif p > 1 then p = 1 end
+    return p
 end
 
--- Render button with progress
+-- 渲染：改为「更新已有按钮的文本与进度」，几何计算全部交给 osd-button
 render_button = function()
-    if not button_state.visible then
+    if not prompt_button or not prompt_button:is_visible() then
         return
     end
-    init_button_overlay()
-
-    -- Get display size using osd-dimensions (same as notify_skip)
-    local dims = mp.get_property_native("osd-dimensions")
-    local screen_width, screen_height
-    if dims then
-        screen_width = dims.w
-        screen_height = dims.h
-    else
-        screen_width = 1920
-        screen_height = 1080
-    end
-
-    -- Calculate scale (same as notify_skip)
-    local scale = screen_height / 1080
-    local button_padding_x = o.button_padding_x * scale
-    local button_padding_y = o.button_padding_y * scale
-    local font_size = o.button_font_size * scale
-    local hint_font_size = font_size * 0.9  -- Smaller font for hint
-
-    -- Calculate button dimensions with hint text
-    local message_width = #button_state.message * font_size * 0.6
-    local hint_text = "[y/n]"
-    local hint_width = #hint_text * hint_font_size * 0.6
-    local max_text_width = math.max(message_width, hint_width)
-    local button_width = max_text_width + button_padding_x * 2
-    local line_spacing = font_size * 0.1
-    local button_height = font_size + line_spacing + hint_font_size + button_padding_y * 2
-
-    -- Position button: bottom right, same as notify_skip
-    local margin = o.button_margin * scale
-    local button_x = screen_width - button_width - margin
-    local button_y = screen_height - button_height - margin - (80 * scale)
-
-    -- Check mouse hover (same method as notify_skip)
-    local pos = mp.get_property_native("mouse-pos")
-    local mouse_x, mouse_y, mouse_hover
-    if pos then
-        mouse_x = pos.x
-        mouse_y = pos.y
-        mouse_hover = pos.hover
-    else
-        mouse_x = 0
-        mouse_y = 0
-        mouse_hover = false
-    end
-    local is_hover = mouse_hover and is_mouse_in_button(button_x, button_y, button_width, button_height, mouse_x, mouse_y)
-    button_state.mouse_hover = is_hover
-
-    -- Colors
-    local text_color = is_hover and o.button_text_hover_color or o.button_text_color
-    local border_color = o.button_border_color
-
-    -- Calculate progress
-    local progress = 0
-    if button_state.countdown_total > 0 and button_state.countdown_remaining > 0 then
-        progress = 1 - (button_state.countdown_remaining / button_state.countdown_total)
-    elseif button_state.countdown_remaining == 0 then
-        progress = 1
-    end
-
-    local progress_color = is_hover and o.button_progress_hover_color or o.button_progress_color
-    local remaining_color = is_hover and o.button_remaining_hover_color or o.button_remaining_color
-
-    local ass = assdraw.ass_new()
-    ass:new_event()
-    ass:pos(0, 0)
-    ass:append("{\\blur0\\bord0\\1c&HFFFFFF&\\3c&HFFFFFF&}")
-
-    -- Draw border
-    ass:draw_start()
-    ass:append("{\\1c&H000000&\\3c&H" .. border_color .. "&\\bord" .. (o.button_border * scale) .. "}")
-    ass:round_rect_cw(button_x, button_y, button_x + button_width, button_y + button_height, o.button_radius * scale)
-    ass:draw_stop()
-
-    -- Draw progress fill (left part)
-    if progress > 0 then
-        local progress_width = button_width * progress
-        ass:new_event()
-        ass:pos(0, 0)
-        ass:append("{\\blur0\\bord0}")
-        ass:draw_start()
-        ass:append("{\\1c&H" .. progress_color .. "&}")
-        if progress >= 1 then
-            ass:round_rect_cw(button_x, button_y, button_x + button_width, button_y + button_height, o.button_radius * scale)
-        else
-            ass:round_rect_cw(button_x, button_y, button_x + progress_width, button_y + button_height, o.button_radius * scale, 0)
-        end
-        ass:draw_stop()
-    end
-
-    -- Draw remaining fill (right part)
-    if progress < 1 then
-        local progress_width = button_width * progress
-        ass:new_event()
-        ass:pos(0, 0)
-        ass:append("{\\blur0\\bord0}")
-        ass:draw_start()
-        ass:append("{\\1c&H" .. remaining_color .. "&}")
-        if progress > 0 then
-            ass:round_rect_cw(button_x + progress_width, button_y, button_x + button_width, button_y + button_height, 0, o.button_radius * scale)
-        else
-            ass:round_rect_cw(button_x, button_y, button_x + button_width, button_y + button_height, o.button_radius * scale)
-        end
-        ass:draw_stop()
-    end
-
-    -- Draw text (main message)
-    local text_x = button_x + button_width / 2
-    local text_y = button_y + button_height / 2 - (hint_font_size + line_spacing) / 2
-    ass:new_event()
-    ass:append("{\\an5\\fs" .. font_size .. "\\b1\\bord0\\shad0\\1c&H" .. text_color .. "&}")
-    ass:pos(text_x, text_y)
-    ass:append(button_state.message)
-
-    -- Draw keyboard hint (second line)
-    local hint_y = text_y + font_size / 2 + line_spacing + hint_font_size / 2
-    ass:new_event()
-    ass:append("{\\an5\\fs" .. hint_font_size .. "\\b0\\bord0\\shad0\\1c&H" .. text_color .. "&\\alpha&H80&}")
-    ass:pos(text_x, hint_y)
-    ass:append(hint_text)
-
-    local ass_text = ass.text
-
-    -- Set overlay resolution and data
-    button_state.overlay.res_x = screen_width
-    button_state.overlay.res_y = screen_height
-    button_state.overlay.data = ass_text
-    button_state.overlay:update()
+    prompt_button:set_text(button_state.message, "[y/n]")
+    prompt_button:set_progress(current_progress())
+    sync_button_state()
 end
 
+
 -- Bind/unbind button click
+-- 2026-10-05：不再读 button_state.mouse_hover（那是上一帧的陈旧值，
+-- 且依赖 render 先于判定发生）。改为问 osd-button 的 _hit_rect，
+-- 它由渲染过程唯一写入，是当前帧的权威矩形。
 bind_button_click = function()
     mp.add_forced_key_binding("MBTN_LEFT", "chapterskip-button-click", function()
         local pos = mp.get_property_native("mouse-pos")
         if not pos then return end
 
-        if button_state.mouse_hover then
-            -- Clicked on button
-            if button_state.action then
-                button_state.action()
-            end
+        local consumed = false
+        if prompt_button then
+            consumed = prompt_button:on_mouse_click(pos.x, pos.y)
+        end
+
+        if consumed then
+            -- 命中按钮：动作已由 on_click 回调执行，这里只负责收起
             hide_button()
         else
-            -- Clicked outside - cancel
+            -- 点在按钮外 —— 取消
             hide_button()
         end
     end)
@@ -525,13 +457,6 @@ end
 
 unbind_button_click = function()
     mp.remove_key_binding("chapterskip-button-click")
-end
-
--- Mouse move handler
-local function handle_button_mouse_move()
-    if button_state.visible then
-        render_button()
-    end
 end
 
 -- Hide button
@@ -547,9 +472,10 @@ hide_button = function()
     button_state.skip_obj = nil
     button_state.countdown_remaining = 0
     button_state.countdown_total = 0
+    button_state.mouse_hover = false
 
-    if button_state.overlay then
-        button_state.overlay:remove()
+    if prompt_button then
+        prompt_button:hide()
     end
 
     unbind_button_click()
@@ -570,7 +496,30 @@ local function show_button(message, action, skip_obj)
     button_state.countdown_remaining = o.timeout
     button_state.countdown_total = o.timeout
 
+    -- 2026-10-05：由 osd-button 创建/复用按钮实例。
+    -- 复用同一个实例（而非每次 new），可避免反复创建 overlay 与订阅；
+    -- 且实例内部持有 _hit_rect，复用才能保证「存矩形→读矩形」持续有效。
+    if not prompt_button then
+        prompt_button = osd_button.new({
+            anchor  = "bottom-right",
+            label   = message,
+            hint    = "[y/n]",
+            z       = 2000,
+            style   = button_style(),
+            -- 点击回调直接执行动作（命中判定由 osd-button 负责）
+            on_click = function()
+                if button_state.action then
+                    button_state.action()
+                end
+            end,
+        })
+    else
+        prompt_button:set_text(message, "[y/n]")
+        prompt_button:set_enabled(true)
+    end
+
     render_button()
+    prompt_button:show()
 
     bind_button_click()
 
@@ -602,8 +551,9 @@ local function show_button(message, action, skip_obj)
     end
 end
 
--- Register mouse move observer
-mp.observe_property("mouse-pos", "native", handle_button_mouse_move)
+-- 2026-10-05：原先此处注册裸的 mouse-pos observer，每次移动都全量 render。
+-- 现改为由 osd-button 内部的**共享订阅**驱动悬停反馈（且只在 hover 翻转时重绘），
+-- 不再需要本脚本自行订阅。见 script-modules/osd-button.lua 的 _start_mouse_observer。
 
 -- Check if chapter matches skip pattern (title-based or position-based)
 local function matches(i, title, chapter_time, chapter_duration, total_chapters, duration)
@@ -1155,8 +1105,14 @@ mp.observe_property('percent-pos', 'number', function(_, value)
 end)
 
 mp.add_hook('on_unload', 10, function()
+    sync_button_state()
     if button_state.visible then
         cancel_skip_prompt()
+    end
+    -- 2026-10-05：销毁按钮实例，释放内部共享 mouse-pos 订阅
+    if prompt_button then
+        prompt_button:destroy()
+        prompt_button = nil
     end
     if skip_timer then
         skip_timer:kill()
