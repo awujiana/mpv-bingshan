@@ -1,0 +1,28 @@
+*.log
+*.xml
+*.txt
+config.json
+
+cache/
+state/
+files/
+playlists/
+
+scripts/webtorrent.js
+
+# === WorkBuddy AI 私有数据（勿提交）===
+.workbuddy-ai/
+.workbuddy/
+**/.workbuddy-ai/
+**/.workbuddy/
+
+# === 运行时生成的状态/缓存文件 ===
+# uosc_staff_credits 运行时产物（历史、运行时配置、数据缓存）
+staff-credits-history.json
+staff-credits-runtime-config.json
+staff-credits-data-cache.json
+recent.json
+
+# === 例外：确需纳入版本管理的文件 ===
+# file-browser 收藏夹为用户配置，需保留
+!script-opts/file_browser_favourites.txt
