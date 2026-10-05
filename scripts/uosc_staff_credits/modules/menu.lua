@@ -405,10 +405,35 @@ end
 
 -- search_suggestion: 预填文本（通常为 parse_title 结果），可为 nil
 -- source: 数据源标识（如 "bangumi"）
-function M.show_search_panel(search_suggestion, source)
+--
+-- 2026-10-05：对齐 uosc_danmaku 的搜索面板。参考实现
+--   uosc_danmaku/modules/menu.lua 的 open_input_menu_uosc()，它额外提供了：
+--     · 一行 hint：  "  追加|ds或|dy或|dm可搜索电视剧|电影|国漫"
+--     · 一行状态：  "已关联弹幕：<番名>-<集数>"（bold+italic，不可选中）
+--   本面板此前两者皆无，用户不知道支持 `|` 后缀语法，也不知道当前是否已关联。
+--   这里补齐同样的提示行；「已关联」状态行由调用方通过 status_text 传入。
+function M.show_search_panel(search_suggestion, source, status_text)
     local script_name = deps.script_name or ""
     source = source or "bangumi"
     local suggestion = search_suggestion or ""
+
+    -- 构造 items：状态行（如有）+ 语法提示行（对齐 uosc_danmaku）
+    local items = {}
+    if status_text and status_text ~= "" then
+        table.insert(items, {
+            title = status_text,
+            bold = true,
+            italic = true,
+            keep_open = true,
+            selectable = false,
+        })
+    end
+    table.insert(items, {
+        -- 与 uosc_danmaku 逐字一致的提示文案
+        hint = "  追加|ds或|dy或|dm可搜索电视剧|电影|国漫",
+        keep_open = true,
+        selectable = false,
+    })
 
     M.open_menu({
         type = M.MENU_SEARCH,
@@ -423,9 +448,34 @@ function M.show_search_panel(search_suggestion, source)
         footnote = suggestion ~= ""
             and "建议标题: " .. suggestion .. " · 按 Enter 直接搜索"
             or "使用enter或ctrl+enter进行搜索 · 可直接修改输入框内容",
-        items = {},
+        items = items,
     })
 end
+
+-- parse_query_class: 拆解 `名称|class` 后缀语法（对齐 uosc_danmaku）
+--
+-- 参考 uosc_danmaku/modules/menu.lua:
+--     local name, class = query:match("^(.-)%s*|%s*(.-)%s*$")
+--     if name and class then query_extra(name, class) else get_animes(query) end
+--
+-- 语义：用户在搜索框里写「无职转生|ds」，`|ds` 表示改搜「电视剧」这一类。
+--   ds → 电视剧（tv） · dy → 电影（movie） · dm → 国漫（anime）
+-- 返回：name, class（无后缀时 class = nil）
+function M.parse_query_class(query)
+    if type(query) ~= "string" or query == "" then return query, nil end
+    local name, class = query:match("^(.-)%s*|%s*(.-)%s*$")
+    if name and class and class ~= "" then
+        return name, class:lower()
+    end
+    return query, nil
+end
+
+-- CLASS_HINTS: `|xx` 后缀 → 提示用的中文类别名
+M.CLASS_HINTS = {
+    ds = "电视剧",
+    dy = "电影",
+    dm = "国漫",
+}
 
 -- ============ show_search_results（UI.md 8.5）============
 

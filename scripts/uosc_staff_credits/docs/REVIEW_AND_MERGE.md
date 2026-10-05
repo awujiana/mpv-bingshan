@@ -739,3 +739,163 @@ cd .. && ./mpv.exe --vo=null --ao=null --msg-level=all=info \
 > ⚠️ 真机测试的两条纪律：
 > 1. **不要加 `--no-config`** —— 那会让 `portable_config` 完全不被加载，测了个寂寞。
 > 2. 输出重定向到文件再 grep，别直接管道 —— mpv 以 SIGTERM 收尾会让管道丢输出。
+
+---
+
+## 9. 搜索链路修复：繁体标题 + 集数解析（2026-10-05 二轮）
+
+### 9.0 用户报告
+
+播放 `無職転生 III ～異世界行ったら本気だす～ - 09` 时：
+
+1. **搜索框里预填的是繁体日文原名**，不是中文 —— Bangumi 搜不到条目。
+2. **对应集数查不到**。
+
+要求：「参考本项目的另一个脚本 `uosc_danmaku`，至少做到和它的搜索一模一样」。
+
+### 9.1 根因一：`is_chinese()` 的字节区间把「中文」当成「简体中文」
+
+```lua
+-- modules/utils.lua 原实现
+str:find("[\228-\233][\128-\191]")
+```
+
+Lua 字符类里 `\228-\233` 是**字节**范围，而 UTF-8 中 `E4..E9` 恰好是**全部 CJK 汉字**的首字节区间：
+
+| 字 | 首字节 | 简/繁/日 |
+|---|---|---|
+| 无 职 | E6 E8 | 简体 |
+| 無 職 | E7 E8 | 繁体 |
+| 進 撃 | E9 E6 | 日文汉字 |
+
+⇒ `is_chinese("無職転生") == true`。
+
+而 `resolve_chinese_title()` 的第一句就是
+
+```lua
+if utils_mod.is_chinese(title) then return title end
+```
+
+于是繁体标题被判定为「已经是中文」，**直接原样返回，从不送去做转换**。
+
+> **关键认知：「是中文」和「是简体中文」是两回事。**
+> 原代码把前者当后者用，这个偷换概念让整条转换链路静默失效 ——
+> 没有报错、没有日志，只是搜索结果为空。
+
+### 9.2 根因二：缺 ` - 09` 的 DashEpisode 模式
+
+`guess.lua` 原有 5 个集数模式（SxxExx / Episode / EP?\d+ / 第N话 / `[\d+]` / Season N），
+**没有一个能匹配 `無職転生 … - 09`**。实测 6 个模式对该文件名全部返回 `None`。
+
+双重伤害：
+
+- `episode` 保持 `nil`
+- **且 `title_part` 保持整个文件名**（含 ` - 09`）
+- ⇒ 搜索关键词 = `無職転生 III ～異世界行ったら本気だす～ - 09`
+
+### 9.3 根因三（新发现）：Lua 字符类是「字节集」，不是「码点集」
+
+这是本轮**最有价值的发现**，且**同一个坑连续踩了三次**：
+
+| # | 字符类 | 位置 | 后果 |
+|---|---|---|---|
+| 1 | `[～〜~]` | `guess.lua` `strip_subtitle` | 字节集含 `80/9C/9E` 等**续接字节** → 从汉字中间匹配 → 丢掉「す～」6 字节 |
+| 2 | `[ぁ-ゖァ-ヺーｦ-ﾟ]` | `title_normalize.lua` `has_kana` | `ぁ`=E3 81 81 … 字节区间使首字节 ≥E3 全部命中 → **误匹配所有汉字** |
+| 3 | `[\228-\233][\128-\191]` | `utils.lua` `is_chinese` | 简/繁/日汉字全算「中文」 |
+
+实测证据（`tools/` 下的 probe 脚本产出）：
+
+```text
+[～〜~] 展开字节集 = {7E, 80, 9C, 9E, BD, E3, EF}
+  → 含 80/9C/9E，均为 UTF-8 续接字节
+「無職転生 III ～異世界行ったら本気だす～」#56
+  过 [～〜~] 规则后 → #55（尾部「～」被吃掉，而这串本无「～…～」结构）
+  叠加 [%-–—] 两条规则 + repeat 迭代 → #50，丢 6 字节
+
+KANA 类 find() 实测：
+  进 无 间 鬼 巨 人 の あ ア  → 全部 true
+  ⇒ is_simplified_chinese("进击的巨人") == false（明明是简体！）
+  ⇒ resolve_chinese_title 第 2 步「已是简体就早退」永远不成立
+     每次搜索都白跑一轮网络请求
+```
+
+**结论（写进纪律）：凡是非 ASCII 的 Lua 字符类，一律不可信。**
+必须先把字符串解码成**码点**，再按码点区间判断。
+
+### 9.4 修复内容
+
+| 文件 | 改动 |
+|---|---|
+| `modules/title_normalize.lua` | **新增**。复用 `uosc_danmaku/dicts/t2s_chars.lua`（4113 条单字映射）；新增 UTF-8 解码器 `utf8_codepoints` + `has_kana`/`has_han`（码点判定）；`is_simplified_chinese` 全面改用码点 |
+| `modules/guess.lua` | `strip_subtitle` 从「字节类正则」重写为「UTF-8 字符序列 + 尾部回扫」；新增**模式 6 DashEpisode**，并支持尾部发布组标签 |
+| `app/search_pipeline.lua` | `resolve_chinese_title` 3 步化（本地转换 → 是简体则零网络早退 → 否则联网）；`resolve_display_title` 与 fankuhub 结果过滤改用 `is_simplified_chinese` |
+| `features/subject_select.lua` | 预填前**同步**做本地繁→简，消除「先显示错标题再刷新」的闪烁 |
+| `features/fankuhub_search.lua` | 同上 |
+| `modules/menu.lua` | 新增 `parse_query_class`（`名称\|class` 语法）+ hint 行 `追加\|ds或\|dy或\|dm可搜索电视剧\|电影\|国漫`（与 `uosc_danmaku` 逐字一致）+ `status_text` 状态行 |
+| `app/dispatcher.lua` | `handle_search` 接入 `\|class` 解析，映射到 Bangumi subject type |
+
+### 9.5 `uosc_danmaku` 对齐清单
+
+| 能力 | uosc_danmaku | 本项目（修复后） |
+|---|---|---|
+| 繁体→简体字典 | `dicts/t2s_chars.lua` 4113 条 | ✅ 直接复用同一份 |
+| 逐字符转换（UTF-8 安全） | `modules/parse.lua` `convert()` | ✅ `title_normalize.to_simplified()` |
+| 「已是简体」判定 | — | ✅ `is_simplified_chinese`（码点） |
+| `名称\|class` 后缀 | `ds`/`dy`/`dm` | ✅ `parse_query_class` |
+| 语法提示行 | `追加\|ds或\|dy或\|dm…` | ✅ 逐字一致 |
+| `已关联…` 状态行 | ✅ | ✅ `status_text` 参数 |
+| 集数解析（` - 09`） | `format_filename()` 14 条正则 | ✅ 新增模式 6 + 标签剥离 |
+
+### 9.6 新增回归测试（2 个）
+
+```bash
+cd ..   # mpv 根目录
+./luajit.exe portable_config/tools/guess-title-test.lua        # 13/13
+./luajit.exe portable_config/tools/title-normalize-test.lua    # 34/34
+```
+
+两个测试都**内置字节安全断言**：
+
+- `guess-title-test.lua` 的 `is_valid_utf8()` —— 任何残缺 UTF-8 一律判 FAIL
+- `title-normalize-test.lua` 的「★字节类 bug 红线」组 ——
+  把 `has_kana('进击的巨人') == false` 这类断言固化，防止有人再把字节类写回来
+
+**反向验证（证明测试不是空测试）**：把旧的 `strip_subtitle` 塞回去跑，
+**4/4 全部 FAIL**（每次丢 6 字节且从不真正剥掉副标题）；新实现 13/13 PASS。
+
+### 9.7 真机验证（语法绿灯 ≠ 能跑）
+
+字典是**懒加载**（首次转换才 `dofile`），启动阶段不触发，
+所以专门跑了探针确认真机路径可达：
+
+```text
+[_tn_probe] expand-path ~~/scripts = D:/…/portable_config/scripts
+[_tn_probe] dict path  = …/uosc_danmaku/dicts/t2s_chars.lua
+[_tn_probe] io.open 成功?  true
+[_tn_probe] dofile ok? true type: table
+[_tn_probe] 字典条数 = 4113
+[_tn_probe] 無職転生 → 无职転生
+[uosc_staff_credits] [title_normalize][PROBE] t2s 字典已载入   ← 模块自身也载入成功
+```
+
+### 9.8 门禁清单（更新为 10 项，全部通过）
+
+```bash
+cd portable_config
+../luajit.exe tools/lua-syntax-check.lua            # 1. 语法：186/186
+../luajit.exe tools/osd-button-selftest.lua         # 2. 自测：16/16
+../luajit.exe tools/osd-button-drift-regression.lua # 3. 漂移：旧漏判/新命中
+../luajit.exe tools/guess-title-test.lua            # 4. 标题解析：13/13  ★新
+../luajit.exe tools/title-normalize-test.lua        # 5. 繁简转换：34/34  ★新
+python tools/uosc-verify-buttons.py                 # 6. 按钮：未注册 0
+python tools/uosc-verify-routes.py                  # 7. 路由：未注册 0
+python tools/lua-audit-nilguards.py                 # 8. 审计：P0/P1 = 0
+python tools/lua-audit-nilguards-selftest.py        # 9. 金丝雀：规则有效
+# 10. 真机（在 mpv 根目录）
+cd .. && ./mpv.exe --vo=null --ao=null --frames=1 --msg-level=all=info \
+    "av://lavfi:testsrc=d=1"
+```
+
+> ⚠️ `guess-title-test.lua` 与 `title-normalize-test.lua` 在**两个目录**下行为不同：
+> `title-normalize-test.lua` 依赖 cwd 相对路径读字典，必须从 mpv 根目录跑；
+> `lua-syntax-check.lua` / `osd-button-drift-regression.lua` 必须从 `portable_config/` 跑。

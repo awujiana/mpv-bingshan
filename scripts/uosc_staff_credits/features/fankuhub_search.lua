@@ -136,16 +136,36 @@ function M.show_search_panel(suggestion, source)
         suggestion = deps.search_pipeline.resolve_title_sync()
     end
 
-    -- 2. 立即显示面板
-    deps.menu.show_search_panel(suggestion, source)
+    -- 2. 本地繁→简（同步、零网络），让预填立刻是简体（2026-10-05 修正）
+    local local_title = suggestion
+    if local_title and local_title ~= "" then
+        local ok, tn = pcall(require, "modules.title_normalize")
+        if ok and tn and type(tn.to_simplified) == "function" then
+            local converted = tn.to_simplified(local_title)
+            if converted and converted ~= "" then
+                local_title = converted
+            end
+        end
+    end
 
-    -- 3. 异步转换为中文标题
-    if suggestion and suggestion ~= ""
+    -- 3. 立即显示面板
+    deps.menu.show_search_panel(local_title, source)
+
+    -- 4. 仍非简体时异步走网络转换
+    local need_online = true
+    if local_title and local_title ~= "" then
+        local ok, tn = pcall(require, "modules.title_normalize")
+        if ok and tn and type(tn.is_simplified_chinese) == "function" then
+            need_online = not tn.is_simplified_chinese(local_title)
+        end
+    end
+    if need_online
+       and suggestion and suggestion ~= ""
        and deps.search_pipeline
        and type(deps.search_pipeline.resolve_chinese_title) == "function" then
         deps.search_pipeline.resolve_chinese_title(suggestion, function(chinese_title)
             if chinese_title and chinese_title ~= ""
-               and chinese_title ~= suggestion then
+               and chinese_title ~= local_title then
                 -- 同类型菜单用 update-menu 避免闪烁
                 deps.menu.show_search_panel(chinese_title, source)
             end

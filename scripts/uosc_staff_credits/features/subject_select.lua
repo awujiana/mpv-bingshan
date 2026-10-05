@@ -86,10 +86,16 @@ end
 -- source: 数据源标识
 -- 流程：
 --   1. 获取原始 suggestion（调用统一接口 resolve_title_sync，4 级优先级）
---   2. 立即显示面板（原始标题）
---   3. 异步调用 resolve_chinese_title 转换为中文，转换成功后 update_menu 更新 suggestion
+--   2. **本地**做一次繁→简转换，把转换结果作为预填（零延迟、零网络）
+--   3. 立即显示面板
+--   4. 仍非简体时异步走网络转换，成功后 update_menu 更新
 -- v1.6: 复用 search_pipeline.resolve_title_sync 统一标题获取逻辑
 --       （独立于 uosc_danmaku，未暴露时也能通过文件名解析 + 中文转换获取中文标题）
+--
+-- 2026-10-05 修正：原来直接拿原始标题预填，导致搜索框里显示的是
+--   「無職転生 III」这种**繁体日文原名**（用户截图所见）。
+--   现在第 2 步先用 title_normalize 本地转换 —— 这一步是纯查表，没有 IO，
+--   可以同步做，从而彻底消除「先显示错标题再刷新」的闪烁。
 function M.show_bgm_search_panel(suggestion, source)
     if deps.notify and deps.notify.set_tag then deps.notify.set_tag("BGM 搜索") end
     if not deps.menu or type(deps.menu.show_search_panel) ~= "function" then
@@ -103,18 +109,37 @@ function M.show_bgm_search_panel(suggestion, source)
         suggestion = deps.search_pipeline.resolve_title_sync()
     end
 
-    -- 立即显示面板（原始标题，避免延迟感）
-    deps.menu.show_search_panel(suggestion, source)
+    -- 2. 本地繁→简（同步、零网络），让预填内容立刻就是简体
+    local local_title = suggestion
+    if local_title and local_title ~= "" then
+        local ok, tn = pcall(require, "modules.title_normalize")
+        if ok and tn and type(tn.to_simplified) == "function" then
+            local converted = tn.to_simplified(local_title)
+            if converted and converted ~= "" then
+                local_title = converted
+            end
+        end
+    end
 
-    -- 异步转换为中文标题，转换成功后用 update_menu 更新 suggestion
-    -- 仅当原标题非空且非中文时触发
-    if suggestion and suggestion ~= ""
+    -- 3. 立即显示面板（预填已简体化）
+    deps.menu.show_search_panel(local_title, source)
+
+    -- 4. 仍非简体（含日文假名 / 字典未覆盖的繁体）时，异步走网络转换
+    local need_online = true
+    if local_title and local_title ~= "" then
+        local ok, tn = pcall(require, "modules.title_normalize")
+        if ok and tn and type(tn.is_simplified_chinese) == "function" then
+            need_online = not tn.is_simplified_chinese(local_title)
+        end
+    end
+    if need_online
+       and suggestion and suggestion ~= ""
        and deps.search_pipeline
        and type(deps.search_pipeline.resolve_chinese_title) == "function" then
         deps.search_pipeline.resolve_chinese_title(suggestion, function(chinese_title)
-            -- 转换成功且与原标题不同，更新面板
+            -- 转换成功且与当前预填不同，更新面板
             if chinese_title and chinese_title ~= ""
-               and chinese_title ~= suggestion then
+               and chinese_title ~= local_title then
                 -- 同类型菜单用 update-menu 避免闪烁（menu.show_search_panel 内部自动选择）
                 deps.menu.show_search_panel(chinese_title, source)
             end
@@ -125,7 +150,9 @@ end
 -- search_subject: 执行搜索并展示结果
 -- query: 搜索关键词
 -- source: 数据源标识（用于结果回调路由）
-function M.search_subject(query, source)
+-- subject_type: 可选，Bangumi 类别过滤（来自 `名称|ds/dy/dm` 后缀）
+--               1=TV/动画 2=电视剧 3=剧场版；nil = 不过滤
+function M.search_subject(query, source, subject_type)
     if not query or query == "" then
         if deps.notify then deps.notify.warn("搜索关键词为空") end
         return
@@ -151,6 +178,19 @@ function M.search_subject(query, source)
             if err_info and err_info.msg then msg_str = err_info.msg end
             if deps.notify then deps.notify.error(msg_str) end
             return
+        end
+        -- 类别过滤（`名称|ds/dy/dm` 后缀）
+        if subject_type and type(results) == "table" then
+            local filtered = {}
+            for _, r in ipairs(results) do
+                -- Bangumi 搜索结果里类别字段名可能是 type / subject_type
+                local t = (type(r) == "table") and (r.type or r.subject_type) or nil
+                if t == nil or tonumber(t) == subject_type then
+                    filtered[#filtered + 1] = r
+                end
+            end
+            -- 过滤后为空则回退到全集（避免把用户搜成 0 结果）
+            if #filtered > 0 then results = filtered end
         end
         -- 加载来源提示：搜索完成
         if deps.notify and type(deps.notify.show_click_hint) == "function" then

@@ -314,6 +314,20 @@ end
 -- 按 source 分发：
 --   "bangumi" → feature_subject_select
 --   "fankuhub" / "fankuhub_person" → feature_fankuhub_search
+--
+-- 2026-10-05：支持 `名称|class` 后缀语法（对齐 uosc_danmaku）。
+--   用户在搜索框里写「无职转生|ds」表示按「电视剧」检索。
+--   参考 uosc_danmaku/modules/menu.lua 的 search-anime-event 处理：
+--     local name, class = query:match("^(.-)%s*|%s*(.-)%s*$")
+--     if name and class then query_extra(name, class) else get_animes(query) end
+--   本项目的 class → 类别过滤的映射见 CLASS_TO_SUBJECT_TYPE。
+local CLASS_TO_SUBJECT_TYPE = {
+    ds = 2,  -- 电视剧 → Bangumi type 2 (TV)
+    dy = 3,  -- 电影   → Bangumi type 3 (剧场版)
+    dm = 1,  -- 国漫   → Bangumi type 1 (TV/动画)
+}
+deps.CLASS_TO_SUBJECT_TYPE = CLASS_TO_SUBJECT_TYPE
+
 local function handle_search(source, query)
     local hint_name = "BGM 搜索"
     if source == "fankuhub" then hint_name = "番库搜索"
@@ -323,6 +337,22 @@ local function handle_search(source, query)
         pcall(deps.notify.show_click_hint, hint_name, "加载中...")
     end
     source = source or "bangumi"
+
+    -- 解析 `名称|class` 后缀（对齐 uosc_danmaku）
+    local query_class = nil
+    if query and query ~= "" then
+        if deps.menu and type(deps.menu.parse_query_class) == "function" then
+            query, query_class = deps.menu.parse_query_class(query)
+        end
+        if query_class and query_class ~= "" then
+            -- 注意：必须用本模块的 debug_log 包装，不要判 type(deps.debug_log)。
+            -- deps.debug_log 在 init contract 里声明为字符串 "function"
+            -- （那是契约声明，不是真实函数），type() 永远是 "string"。
+            debug_log("handle_search: query_class=%s name=%q", query_class, query)
+        end
+    end
+    -- 解析出的类别 → Bangumi subject type（仅 bangumi 路径使用）
+    local subject_type = query_class and CLASS_TO_SUBJECT_TYPE[query_class] or nil
 
     -- 番库搜索路径
     if source == "fankuhub" or source == "fankuhub_person" then
@@ -349,7 +379,13 @@ local function handle_search(source, query)
         end
     else
         if type(deps.feature_subject_select.search_subject) == "function" then
-            pcall(deps.feature_subject_select.search_subject, query, source)
+            -- subject_type 为 nil 时行为与原先一致（不按类别过滤）
+            local ok = pcall(deps.feature_subject_select.search_subject,
+                query, source, subject_type)
+            if not ok then
+                -- 兼容旧签名（只接受两个参数）
+                pcall(deps.feature_subject_select.search_subject, query, source)
+            end
         end
     end
 end

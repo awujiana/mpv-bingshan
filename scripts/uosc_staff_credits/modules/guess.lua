@@ -69,6 +69,108 @@ local function apply_title_replace(title)
     return title
 end
 
+-- ---- UTF-8 安全的「按字符」切分 ----
+--
+-- ⚠️ 为什么必须这么做（2026-10-05 踩坑记录）：
+--   Lua 的字符类对多字节字符是**字节集**语义，不是码点集语义。
+--   `[～〜~]` 展开后是字节集 {7E, 80, 9C, 9E, BD, E3, EF} —— 里面含
+--   80/9C/9E 这些 **UTF-8 续接字节**，于是正则会从「某个汉字的中间」
+--   开始匹配，把字符啃成残缺字节。
+--
+--   实测证据（tools/ 下 probe 脚本）：
+--     「無職転生 III ～異世界行ったら本気だす～」(#56)
+--     过一遍 `gsub("%s*[～〜~][^～〜~]*[～〜~]%s*$", " ")` 后变 #55，
+--     即**尾部的「～」被吃掉了**，尽管这串本来就没有「～…～」结构。
+--     再叠加 `[%-–—]`（含 E2 80 前缀共享）的两条规则、配合
+--     `repeat until s == prev` 反复迭代，最终丢掉 6 字节 = 「す～」。
+--
+--   ⇒ 结论：**任何涉及非 ASCII 的字符类都不可信**，必须先把字符串切成
+--      UTF-8 字符序列，再按「整字符」比较。下面复用 title_normalize.lua
+--     同一个 idiom。
+local UTF8_CHAR = "[%z\1-\127\194-\244][\128-\191]*"
+local function utf8_units(s)
+    local t = {}
+    for u in s:gmatch(UTF8_CHAR) do t[#t + 1] = u end
+    return t
+end
+
+-- 波浪号类字符（整字符比较，不再用字节类）
+local TILDE = { ["～"] = true, ["〜"] = true, ["~"] = true }
+-- 连字符类字符
+local DASH = { ["-"] = true, ["–"] = true, ["—"] = true, ["−"] = true }
+local SPACE = { [" "] = true, ["\t"] = true }
+
+local function is_tilde(u) return u ~= nil and TILDE[u] == true end
+local function is_dash(u) return u ~= nil and DASH[u] == true end
+local function is_space(u) return u ~= nil and SPACE[u] == true end
+local function is_digit(u) return u ~= nil and u:match("^%d$") ~= nil end
+
+-- 从尾部吃空格，返回「有效长度」
+local function trim_tail_spaces(u, n)
+    while n >= 1 and is_space(u[n]) do n = n - 1 end
+    return n
+end
+
+-- strip_subtitle: 去掉标题尾部的「副标题」段
+--
+-- 2026-10-05 新增。背景：像
+--   「無職転生 III ～異世界行ったら本気だす～ - 09」
+-- 这种名字，`～…～` 是副标题，搜索时带上它会导致 Bangumi 匹配不到条目。
+--
+-- 处理三类尾部噪声（全部在**字符序列**上做，不碰字节）：
+--   1. 波浪号包裹的副标题：～…～ / ~…~ / 〜…〜
+--   2. 尾部裸的「 - 数字」残留（集数已单独抽出后剩下的分隔符）
+--   3. 尾部孤立的连字符
+--
+-- 实现要点：不用正则去 `$` 锚定多字节结构，而是「从尾部往回扫」，
+-- 逐个字符判断。这样绝不会索引到字符中间。
+local function strip_subtitle(s)
+    if not s then return s end
+    local u = utf8_units(s)
+    local changed = true
+    while changed and #u > 0 do
+        changed = false
+        local n = trim_tail_spaces(u, #u)
+        if n < 1 then break end
+
+        -- 规则 1：尾部是波浪号 → 向前找成对的另一个波浪号，整段删掉
+        if is_tilde(u[n]) then
+            local j = n - 1
+            while j >= 1 and not is_tilde(u[j]) do j = j - 1 end
+            if j >= 1 then
+                -- 找到成对：删除 j..n（含）整段
+                local out = {}
+                for k = 1, j - 1 do out[#out + 1] = u[k] end
+                u = out
+                changed = true
+            else
+                -- 孤立的尾波浪号（无配对）—— 也去掉，它不可能是正文
+                u[n] = nil
+                changed = true
+            end
+
+        -- 规则 2：尾部是数字 → 看它前面紧邻的是不是连字符
+        elseif is_digit(u[n]) then
+            local j = n
+            while j >= 1 and (is_digit(u[j]) or u[j] == "." or u[j] == "v"
+                              or u[j] == "V") do j = j - 1 end
+            local k = trim_tail_spaces(u, j)
+            if k >= 1 and is_dash(u[k]) then
+                local out = {}
+                for m = 1, k - 1 do out[#out + 1] = u[m] end
+                u = out
+                changed = true
+            end
+
+        -- 规则 3：尾部是孤立连字符
+        elseif is_dash(u[n]) then
+            u[n] = nil
+            changed = true
+        end
+    end
+    return table.concat(u)
+end
+
 -- 清理标题噪声：方括号、圆括号、书名号、常见分隔符
 local function clean_title(s)
     if not s then return s end
@@ -78,7 +180,8 @@ local function clean_title(s)
          :gsub("《([^》]*)》", "%1")
          :gsub("〔([^〕]*)〕", "%1")
          :gsub("[%._]", " ")
-         :gsub("%s+", " ")
+    s = strip_subtitle(s)
+    s = s:gsub("%s+", " ")
          :gsub("^%s*(.-)%s*$", "%1")
     return s
 end
@@ -146,6 +249,52 @@ function M.parse_title(path)
                         if m_s then
                             title_part = m_title
                             season = m_s
+                        else
+                            -- 模式 6: 「 - 09」DashEpisode（2026-10-05 新增）
+                            --
+                            -- 为什么补这一条：这是**日文番剧**最常见的命名法，
+                            -- 原实现完全没有覆盖，导致：
+                            --   集数没抽出来（episode = nil）
+                            --   **且 title_part 保持整个文件名**（含 " - 09"），
+                            --   最终搜索关键词 = "無職転生 III ～異世界行ったら本気だす～ - 09"
+                            --   → Bangumi 当然搜不到。
+                            --
+                            -- 要点：必须要求分隔符是「空格 + 连字符 + 空格」或
+                            -- 行首锚定的连字符，否则会把片名里本来就有的
+                            -- 连字符（如 "Re:Zero-1"）误切断。
+                            -- 数字限定 1~3 位，避开年份（4 位）。
+                            -- 用 .- 非贪婪 + $ 锚定，取**最后**一段
+                            -- （避免 "Fate/stay night - 09" 被前面的 "-" 提前截断）。
+                            -- 关键：发布组常把标签缀在集数**后面**，如
+                            --   「[Lilith-Raws] 無職転生 III ～…～ - 09 [Baha][WEB-DL][1080p]」
+                            -- $ 锚定的模式会因此整个失配（实测 ep=nil，标题带全名）。
+                            -- 做法：先把尾部成串的 [..] / (..) 标签剥掉再匹配。
+                            local tail_stripped = fname:gsub("[%s]*[%[%(][^%]%)]*[%]%)]%s*$", "")
+                            -- 反复剥，处理连续多个标签
+                            local prev_s = fname
+                            while tail_stripped ~= prev_s do
+                                prev_s = tail_stripped
+                                tail_stripped = tail_stripped
+                                    :gsub("%s+$", "")
+                                    :gsub("[%[%(][^%]%)]*[%]%)]%s*$", "")
+                            end
+                            local probe = tail_stripped:gsub("%s+$", "")
+
+                            local dash_title, dash_ep =
+                                probe:match("^(.-)%s+[%-–—]%s+(%d%d?%d?[%.v]?%d*)%s*$")
+                            if not dash_ep then
+                                dash_title, dash_ep =
+                                    probe:match("^(.-)%-%-?%s*(%d%d?%d?[%.v]?%d*)%s*$")
+                            end
+                            -- 仍未命中则退回原始串再试一次（避免剥标签剥过头）
+                            if not dash_ep then
+                                dash_title, dash_ep =
+                                    fname:match("^(.-)%s+[%-–—]%s+(%d%d?%d?[%.v]?%d*)%s*$")
+                            end
+                            if dash_ep then
+                                title_part = dash_title
+                                episode = dash_ep:gsub("v%d+$", "")
+                            end
                         end
                     end
                 end

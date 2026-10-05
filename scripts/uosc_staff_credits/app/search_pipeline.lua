@@ -42,6 +42,9 @@ M.init = init
 -- 引用基础设施
 local utils_mod = require("modules.utils")
 local path_mod = require("modules.utils.path")
+-- 2026-10-05：标题规范化（繁体→简体 + 「已是简体」判定）
+-- 修正「繁体/日文标题被判为已是中文 → 从不送去转换」的静默失效，详见模块头部注释
+local title_normalize = require("modules.title_normalize")
 
 -- ============ 内部辅助 ============
 
@@ -58,23 +61,47 @@ end
 -- dandanplay API 返回的 animeTitle 默认即中文译名
 -- TMDB 中文译名通过 extra.search_tmdb 获取（需配置 tmdb_api_key）
 
--- resolve_chinese_title: 非中文标题转换为中文
+-- resolve_chinese_title: 非中文/繁体标题转换为中文
 -- title: 原始标题
 -- callback(chinese_title): 转换完成回调，参数为中文标题（转换失败返回原标题）
+--
+-- 2026-10-05 修正（重要）：
+--   原实现第一句是 `if utils_mod.is_chinese(title) then return title end`，
+--   而 is_chinese 用字节区间 [\228-\233] 判「含汉字」—— E4..E9 恰好覆盖
+--   **全部** CJK 汉字（简/繁/日文汉字都一样），于是：
+--       無職転生 → is_chinese = true → 直接返回 → **永远不转换**
+--   这就是「搜索框填的是繁体日文原名、搜不到中文条目」的根因。
+--
+--   修正分三步：
+--     1. 先用 title_normalize 做**本地**繁体→简体转换（零网络开销）
+--     2. 若本地转换已产出不含繁体的简体标题 → 直接用它，省掉网络往返
+--     3. 否则（仍含繁体 / 是外文）再走网络多源转换，且优先用**简体化后**
+--        的标题去搜（服务端对简体关键词的匹配率更高）
 local function resolve_chinese_title(title, callback)
     if not title or title == "" then
         if callback then callback(title) end
         return
     end
 
-    -- 已是中文，无需转换
-    if utils_mod.is_chinese(title) then
-        debug_log("resolve_chinese_title: already chinese, skip: %s", title)
-        if callback then callback(title) end
+    -- 步骤 1：本地繁体→简体
+    local simplified, changed = title_normalize.normalize(title)
+    if changed then
+        debug_log("resolve_chinese_title: 繁→简 本地转换: %s => %s", title, simplified)
+    end
+
+    -- 步骤 2：本地转换后已是简体中文 → 无需任何网络请求
+    -- 注意这里用 is_simplified_chinese 而非 is_chinese：
+    -- 后者只能判「含汉字」，会把繁体也当成已是中文（这正是原 bug）
+    if title_normalize.is_simplified_chinese(simplified) then
+        debug_log("resolve_chinese_title: already simplified chinese, skip: %s", simplified)
+        if callback then callback(simplified) end
         return
     end
 
-    debug_log("resolve_chinese_title: non-chinese title, converting: %s", title)
+    debug_log("resolve_chinese_title: need online conversion: %s", simplified)
+
+    -- 步骤 3：仍需网络转换时，用「简体化后的标题」作为查询关键词
+    local query = simplified
 
     -- 并发调用 dandanplay + extra，取首个中文候选
     local pending = 0
@@ -89,21 +116,26 @@ local function resolve_chinese_title(title, callback)
             debug_log("resolve_chinese_title: converted to: %s", best_candidate)
             if callback then callback(best_candidate) end
         else
-            debug_log("resolve_chinese_title: conversion failed, keep original")
-            if callback then callback(title) end
+            -- 网络转换失败：至少回落到本地繁体→简体结果（优于原样返回繁体）
+            debug_log("resolve_chinese_title: conversion failed, fallback to: %s", query)
+            if callback then callback(query) end
         end
     end
 
     -- 数据源 1: dandanplay（返回中文 animeTitle）
     if deps.dandanplay and type(deps.dandanplay.search) == "function" then
         pending = pending + 1
-        deps.dandanplay.search(title, function(success, candidates, _err_info)
+        deps.dandanplay.search(query, function(success, candidates, _err_info)
             pending = pending - 1
             if success and type(candidates) == "table" then
                 for _, c in ipairs(candidates) do
-                    if type(c) == "string" and c ~= "" and utils_mod.is_chinese(c) then
-                        if not best_candidate then best_candidate = c end
-                        break
+                    -- 候选也可能带繁体，统一简体化后再判定
+                    if type(c) == "string" and c ~= "" then
+                        local cs = title_normalize.to_simplified(c)
+                        if title_normalize.is_simplified_chinese(cs) then
+                            if not best_candidate then best_candidate = cs end
+                            break
+                        end
                     end
                 end
             end
@@ -114,13 +146,16 @@ local function resolve_chinese_title(title, callback)
     -- 数据源 2: extra（TMDB 中文译名 + 360kan）
     if deps.extra and type(deps.extra.search) == "function" then
         pending = pending + 1
-        deps.extra.search(title, function(success, candidates, _err_info)
+        deps.extra.search(query, function(success, candidates, _err_info)
             pending = pending - 1
             if success and type(candidates) == "table" then
                 for _, c in ipairs(candidates) do
-                    if type(c) == "string" and c ~= "" and utils_mod.is_chinese(c) then
-                        if not best_candidate then best_candidate = c end
-                        break
+                    if type(c) == "string" and c ~= "" then
+                        local cs = title_normalize.to_simplified(c)
+                        if title_normalize.is_simplified_chinese(cs) then
+                            if not best_candidate then best_candidate = cs end
+                            break
+                        end
                     end
                 end
             end
@@ -135,10 +170,16 @@ local function resolve_chinese_title(title, callback)
             pending = pending - 1
             if success and type(results) == "table" then
                 for _, r in ipairs(results) do
-                    if type(r) == "table" and r.name_cn and r.name_cn ~= ""
-                       and utils_mod.is_chinese(r.name_cn) then
-                        if not best_candidate then best_candidate = r.name_cn end
-                        break
+                    if type(r) == "table" and r.name_cn and r.name_cn ~= "" then
+                        -- 2026-10-05 修正：原用 is_chinese(r.name_cn)。
+                        -- is_chinese 是「含汉字」的字节区间判定，繁体/日文汉字
+                        -- 全部为 true → 繁体 name_cn 会被**原样**当成结果返回，
+                        -- 用户看到的仍是繁体。改为：先简体化，再判「是简体中文」。
+                        local cs = title_normalize.to_simplified(r.name_cn)
+                        if title_normalize.is_simplified_chinese(cs) then
+                            if not best_candidate then best_candidate = cs end
+                            break
+                        end
                     end
                 end
             end
@@ -234,24 +275,29 @@ end
 -- resolve_display_title: 异步获取显示标题（含中文转换）
 -- 流程：
 --   1. 调用 resolve_title_sync 获取基础标题
---   2. 若已是中文，直接 callback
+--   2. 已本地转成简体中文，直接 callback
 --   3. 否则调用 resolve_chinese_title 转换（dandanplay + extra + fankuhub 并发）
---   4. 转换失败则返回原标题
+--   4. 转换失败则返回「本地简体化」的标题
 -- callback(chinese_title, season_num): 转换完成回调
+--
+-- 2026-10-05 修正：原用 is_chinese 判「已是中文」→ 繁体标题被跳过转换。
+--   改用 is_simplified_chinese（详见 title_normalize 模块注释）。
 function M.resolve_display_title(callback)
     local base_title, season_num = M.resolve_title_sync()
 
-    -- 已是中文，无需转换
-    if utils_mod.is_chinese(base_title) then
-        debug_log("resolve_display_title: already chinese: %s", base_title)
-        if callback then callback(base_title, season_num) end
+    -- 本地先做一次繁→简，再判定是否还需要网络转换
+    local simplified = title_normalize.to_simplified(base_title)
+
+    if title_normalize.is_simplified_chinese(simplified) then
+        debug_log("resolve_display_title: already simplified chinese: %s", simplified)
+        if callback then callback(simplified, season_num) end
         return
     end
 
-    -- 非中文标题，调用 resolve_chinese_title 转换
-    debug_log("resolve_display_title: non-chinese, converting: %s", base_title)
+    -- 仍需转换的标题，交给 resolve_chinese_title（其内部会再做一次本地简体化）
+    debug_log("resolve_display_title: need conversion: %s", simplified)
     resolve_chinese_title(base_title, function(chinese_title)
-        local final = chinese_title or base_title
+        local final = chinese_title or simplified
         if callback then callback(final, season_num) end
     end)
 end
