@@ -598,3 +598,144 @@ python tools/uosc-verify-routes.py    # 核验每个 script-message-to 路由是
 ```
 
 实测：**button 未注册 0 个，路由未注册 0 个。**
+
+### 8.5 全项目扫描「被 nil 守卫掩盖的错误调用」
+
+#### 8.5.1 这一类缺陷为什么值得单独建工具
+
+本项目的 4 处缺陷（见 §8.1）共享同一个**失效模式**：
+
+> 调用失败 → 返回 nil（而非抛错）→ 下游的 `if not x then return end` 守卫接住
+> → **不崩溃，但功能静默不工作**。
+
+它的危险在于**没有任何信号**：不报错、不告警、日志干净。语法检查（§8.3）也查不出。
+而且它比「直接崩溃」更糟 —— 崩溃会逼你修，静默失效可能潜伏数月。
+
+> **核心教训：`有 nil 守卫` ≠ `安全`。**
+> 守卫只是把「崩溃」转换成了「静默不工作」，后者更难发现。
+
+#### 8.5.2 工具与规则
+
+`tools/lua-audit-nilguards.py`，四类规则：
+
+| 规则 | 检查内容 | 级别 | 为什么定这个级别 |
+|---|---|---|---|
+| **A** | `command_native({"command", …})` 首元素多余包装 | P0 | 必然返回 nil，mpv 报 `Command 'command' not found` |
+| **B** | `notify.*` 被当 printf 用（首参含格式符且传了额外参数） | P0 | `duration` 收到字符串 → `mp.osd_message` 做算术 → 抛错 |
+| **C** | `command_native(…):method()` 无守卫 | **INFO** | 是否抛错取决于命令名，静态无法判定（见下） |
+| **D** | `require 'script-modules/x'` 但未 prepend `package.path` | P0 | mpv 只搜 `<mpv根>/lua/`，加载必失败 |
+
+#### 8.5.3 用实测校准规则，而不是拍脑袋定级别
+
+**规则 C 从 P1 降为 INFO** —— 因为实测发现 `expand-text` **不会**返回 nil：
+
+`tools/probe-expand-text.lua` 在真机跑出的数据：
+
+| 输入 | 返回 |
+|---|---|
+| `"plain text"` | `"plain text"`（原样） |
+| `"${不存在属性}"` | `"(error)"`（替换为字面量，**不是 nil**） |
+| `"${}"/"${不存在} ${path}"` | `"(error) …"` |
+| `"${"`（非法/未闭合模板） | `"${"`（原样返回） |
+
+⇒ 故 `TopBar.lua:40` 的 `command_native({'expand-text',tpl}):gsub(…)` **永远安全**，
+既不会抛错也不会静默失效。报 P0/P1 都是误报 → 改为 INFO 并在规则里跳过 `expand-text`。
+反之 `expand-path` **会**返回 nil（正是缺陷 2 的成因）。
+
+**规则 B 重构判定逻辑**，以消除唯一一处真实误报：
+之前用「`%s` 后跟逗号」的朴素正则，会把**已修正**的
+`notify.info(string.format("已更新: %s = %s", …))` 再报一次 ——
+因为字面量在**嵌套调用内部**。现新增 `strip_nested_calls()` 剥掉嵌套实参，
+只有「格式符字面量确实是 notify 的**第一个实参**」且「后面还有额外实参」才命中。
+格式符全集也从 `%[sd]` 扩到 Lua 标准全集（`%d %i %u %o %x %X %e %E %f %g %G %c %q`）。
+
+#### 8.5.4 工具自身也要有反例测试（金丝雀自检）
+
+> **一个不报错的坏工具，比没有工具更危险。**
+> 规则若悄悄失效（如某次改动后正则不再匹配），工具照样输出
+> 「未发现可疑模式 ✅」，所有人都以为干净了。
+
+故 `tools/lua-audit-nilguards-selftest.py` 做**双向断言**：
+
+- **正向**：故意重新注入 4 类原始缺陷 → 必须全部命中（A×1、B×3、C×1）
+- **反向**：注入 3 个**正确写法** → 必须**一条都不报**
+  （`string.format` 包装、无格式符的纯文本、`expand-text` 链式调用）
+
+实测结果：
+
+```
+  ✓ 期望 [P0] A/   命中 1 次，实际 1 次
+  ✓ 期望 [P0] B/   命中 3 次，实际 3 次
+  ✓ 期望 [INFO] C/ 命中 1 次，实际 1 次
+  ✓ 正确写法（第 8 行）保持静默
+  ✓ 正确写法（第 9 行）保持静默
+  ✓ 正确写法（第 10 行）保持静默
+金丝雀自检通过 —— 审计规则有效且无已知误报 ✅
+```
+
+#### 8.5.5 全项目扫描结果
+
+```
+扫描 185 个 Lua 文件
+未发现可疑模式 ✅
+P0（必然静默失效/抛错）: 0
+P1（潜在隐患）: 0
+INFO（需人工确认，非缺陷）: 0
+退出码=0
+```
+
+⇒ 4 处已知缺陷已全部修复，且全项目**无同类残留**。
+
+### 8.6 业务链路的「判据陷阱」（重要）
+
+§8.3.2 的 `biz-smoke.lua` 一度把 `main-menu` 判为「无响应」——**这是误判**，
+根因值得记录，因为它是一个通用的观测方法学错误：
+
+`main-menu` 的响应**不走 notify 回执**，而是
+`mp.commandv("script-message-to", "uosc", "open-menu", <json>)` 去开 uosc 菜单。
+测试脚本用 `mp.register_script_message("open-menu", …)` 去抓，**永远抓不到** ——
+因为：
+
+> **mpv 的 script-message 不会回放给「后注册者」。**
+> 测试脚本的加载顺序在 uosc 之后，那条消息早就发过了。
+
+用 `--msg-level=all=trace` 看 **mpv 自身的命令日志**，真相立刻显现：
+
+```
+[cplayer] Run command: script-message-to, flags=64,
+  args=[target="uosc", args="open-menu",
+        args="{\"search_style\":\"disabled\",\"title\":\"Bangumi 工具箱\",\"items\":[…11 项…]}"]
+```
+
+⇒ 结论：**不能用「本进程能否收到某个 script-message」当判据**，
+必须改看 mpv 自身的命令日志或可观测副作用。
+现 `biz-smoke.lua` 已把这一点写进注释，并标注 `main-menu` 需 trace 级核验。
+
+四条路由的最终结论：
+
+| 路由 | 判据 | 结果 |
+|---|---|---|
+| `main-menu` | trace 日志出现 `args="open-menu"` + 完整 items | ✅ 通 |
+| `character-intro` | `[Bangumi 工具箱] 角色介绍 · 加载中...` | ✅ 通 |
+| `cover-intro` | `[Bangumi 工具箱] 封面简介 · 加载中...` | ✅ 通 |
+| `staff-credits-production-score` | `[Bangumi 工具箱] 制作评分 · 加载中...` | ✅ 通 |
+
+### 8.7 门禁清单（8 项，全部通过）
+
+```bash
+cd portable_config
+../luajit.exe tools/lua-syntax-check.lua            # 1. 语法：185/185
+../luajit.exe tools/osd-button-selftest.lua         # 2. 自测：16/16
+../luajit.exe tools/osd-button-drift-regression.lua # 3. 漂移：旧漏判/新命中
+python tools/uosc-verify-buttons.py                 # 4. 按钮：未注册 0
+python tools/uosc-verify-routes.py                  # 5. 路由：未注册 0
+python tools/lua-audit-nilguards.py                 # 6. 审计：P0/P1 = 0
+python tools/lua-audit-nilguards-selftest.py        # 7. 金丝雀：规则有效
+# 8. 真机（在 mpv 根目录）
+cd .. && ./mpv.exe --vo=null --ao=null --msg-level=all=info \
+    --script=portable_config/tools/biz-smoke.lua "av://lavfi:testsrc=d=3"
+```
+
+> ⚠️ 真机测试的两条纪律：
+> 1. **不要加 `--no-config`** —— 那会让 `portable_config` 完全不被加载，测了个寂寞。
+> 2. 输出重定向到文件再 grep，别直接管道 —— mpv 以 SIGTERM 收尾会让管道丢输出。

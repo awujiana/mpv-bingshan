@@ -577,8 +577,17 @@ local function handle_set_config(key, value)
     end
 
     -- OSD 提示
+    -- 2026-10-05 修正：notify.* 的签名是 (text, tag, duration)，**不是 printf**。
+    --   原写法把 string.format 的风格直接套上去：
+    --     deps.notify.info("已更新: %s = %s", tostring(key), tostring(converted))
+    --   实际效果是 text=%s 模板（从未被格式化）、tag=key、duration=converted(字符串)。
+    --   duration 收到字符串后，mp.osd_message 内部对其做算术 →
+    --     Lua error: mp.defaults:559: attempt to perform arithmetic on local 'duration' (a string value)
+    --   即：**每次保存设置都会抛错**，且 %s 原样显示。
+    --   已用最小复现实测确认（字符串 duration → 报错；数字/nil → 正常）。
+    --   修正：先 string.format 出最终文本，只传 text（tag/duration 走默认）。
     if deps.notify then
-        deps.notify.info("已更新: %s = %s", tostring(key), tostring(converted))
+        deps.notify.info(string.format("已更新: %s = %s", tostring(key), tostring(converted)))
     end
 
     -- 重新打开设置菜单
