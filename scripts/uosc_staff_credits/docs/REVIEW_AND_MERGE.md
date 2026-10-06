@@ -878,15 +878,19 @@ cd ..   # mpv 根目录
 [uosc_staff_credits] [title_normalize][PROBE] t2s 字典已载入   ← 模块自身也载入成功
 ```
 
-### 9.8 门禁清单（更新为 10 项，全部通过）
+### 9.8 门禁清单（**第二轮快照，已过时** —— 当前清单见 §11.9）
+
+> 📌 本节数字是 2026-10-05 第二轮当时的实测值，保留作历史记录。
+> **不要照抄**：语法已从 186 涨到 188，繁简测试已从 34 涨到 58，
+> 且新增了 3 个测试与 1 道门禁。以 §11.9 为准。
 
 ```bash
 cd portable_config
-../luajit.exe tools/lua-syntax-check.lua            # 1. 语法：186/186
+../luajit.exe tools/lua-syntax-check.lua            # 1. 语法：186/186  ← 现为 188/188
 ../luajit.exe tools/osd-button-selftest.lua         # 2. 自测：16/16
 ../luajit.exe tools/osd-button-drift-regression.lua # 3. 漂移：旧漏判/新命中
-../luajit.exe tools/guess-title-test.lua            # 4. 标题解析：13/13  ★新
-../luajit.exe tools/title-normalize-test.lua        # 5. 繁简转换：34/34  ★新
+../luajit.exe tools/guess-title-test.lua            # 4. 标题解析：13/13
+../luajit.exe tools/title-normalize-test.lua        # 5. 繁简转换：34/34  ← 现为 58/58
 python tools/uosc-verify-buttons.py                 # 6. 按钮：未注册 0
 python tools/uosc-verify-routes.py                  # 7. 路由：未注册 0
 python tools/lua-audit-nilguards.py                 # 8. 审计：P0/P1 = 0
@@ -896,9 +900,23 @@ cd .. && ./mpv.exe --vo=null --ao=null --frames=1 --msg-level=all=info \
     "av://lavfi:testsrc=d=1"
 ```
 
-> ⚠️ `guess-title-test.lua` 与 `title-normalize-test.lua` 在**两个目录**下行为不同：
-> `title-normalize-test.lua` 依赖 cwd 相对路径读字典，必须从 mpv 根目录跑；
-> `lua-syntax-check.lua` / `osd-button-drift-regression.lua` 必须从 `portable_config/` 跑。
+> ⚠️ 上面第 10 条的真机命令**已过时**：`--frames=1` 拿不到日志，
+> 且 `mpv.conf` 设了 `idle=yes` 会挂住被超时杀掉（日志全丢）。
+> 现行写法见 §11.9（必须加 `--no-idle`）。
+
+> ✅ **测试的 cwd 依赖已消除（2026-10-06）**：本节原先警告
+> 「`guess-title-test` / `title-normalize-test` 必须从 mpv 根目录跑」。
+> 现已把 **5 个 `*-test.lua`** 改为从**脚本自身位置**反推 `portable_config`，
+> 任意 cwd 均可运行（详见 §11.10）。
+>
+> ⚠️ **但下面这 2 个脚本仍然必须从 `portable_config/` 跑**，本次**没有**改：
+>   - `lua-syntax-check.lua` —— 用 `glob` 扫相对路径，从别处跑会报
+>     「未找到 .lua 文件」（exit 1）
+>   - `osd-button-drift-regression.lua` —— `dofile("script-modules/osd-button.lua")`
+>     是相对路径，从别处跑会 `cannot open ... Invalid argument`
+>
+> 两者都已实测确认（从 `$TEMP` 跑均 exit 1）。上面代码块第 1~3 条
+> 之所以写 `cd portable_config`，正是因为这个原因，**别删那一行**。
 
 ---
 
@@ -1057,12 +1075,13 @@ python tools/uosc-verify-routes.py                   # 5. 工具栏路由：未�
 python tools/uosc-verify-menu-routes.py              # 6. 菜单路由：本项目未注册 0  ★新
 python tools/lua-audit-nilguards.py                  # 7. 审计：P0/P1 = 0
 python tools/lua-audit-nilguards-selftest.py         # 8. 金丝雀：规则有效
-# 在 mpv 根目录下
-./luajit.exe portable_config/tools/bangumi-user-test.lua      #  9. 79/79   ★新
-./luajit.exe portable_config/tools/progress-sync-test.lua     # 10. 55/55   ★新
-./luajit.exe portable_config/tools/staff-grid-paging-test.lua # 11. 7/7     ★新
-./luajit.exe portable_config/tools/guess-title-test.lua       # 12. 13/13
-./luajit.exe portable_config/tools/title-normalize-test.lua   # 13. 58/58
+
+# 下列 5 个测试**任意 cwd 均可**（2026-10-06 起，见 §11.10）
+../luajit.exe tools/bangumi-user-test.lua            #  9. 79/79  ★新
+../luajit.exe tools/progress-sync-test.lua           # 10. 55/55  ★新
+../luajit.exe tools/staff-grid-paging-test.lua       # 11.  7/7  ★新
+../luajit.exe tools/guess-title-test.lua             # 12. 13/13
+../luajit.exe tools/title-normalize-test.lua         # 13. 58/58
 ```
 
 > ⚠️ 真机冒烟**必须加 `--no-idle`**：本项目 `mpv.conf` 第 105 行设了 `idle=yes`，
@@ -1075,3 +1094,60 @@ python tools/lua-audit-nilguards-selftest.py         # 8. 金丝雀：规则有�
 > ./mpv.exe --vo=null --ao=null --msg-level=all=info \
 >     --script=portable_config/tools/biz-smoke.lua "av://lavfi:testsrc=d=3"
 > ```
+
+### 11.10 收尾修正：测试不再依赖 cwd（2026-10-06）
+
+**发现方式**：收尾复核门禁时，我在 `portable_config/` 下顺手跑了
+`bangumi-user-test.lua`，`tail -3` 显示的是
+```
+  [PASS] 编码数组字段
+  [PASS] 坏输入不抛异常、返回 nil（对齐 mpv 契约）
+  [PASS] 空串返回 nil
+```
+**看起来完全是通过**。但把 stdout / stderr 分开重跑，真相是：
+
+```text
+exit=1
+luajit.exe: tools/bangumi-user-test.lua:230: module 'modules.utils.module_loader' not found
+```
+
+它**崩在 require 上**，而那 3 行 PASS 是崩溃前 §0 JSON 编解码器自检的
+最后输出 —— 恰好落在 `tail` 窗口里。**这是「绿灯假象」的又一变体**，
+和 §8.3.1「语法绿灯 ≠ 能跑」、§7.5「script-modules 不在 package.path」
+是同一族问题：**判据取错了，失败会伪装成成功。**
+
+**根因**：5 个测试都写死了 cwd 相对路径
+```lua
+package.path = "portable_config/scripts/uosc_staff_credits/?.lua;"
+```
+于是「从哪个目录跑」变成了一条**没人写在命令行里、却决定成败**的隐式参数。
+
+**修法**：不再假设 cwd，改从脚本自身位置反推 ——
+脚本在 `<mpv根>/portable_config/tools/`，上溯两级即 `portable_config`：
+
+```lua
+local _src = debug.getinfo(1, "S").source or "@."
+local _tools_dir = _src:match("^@(.*)[/\\][^/\\]*$") or "."
+local _pc = _tools_dir:match("^(.*)[/\\][^/\\]*$") or "."
+package.path = _pc .. "/scripts/uosc_staff_credits/?.lua;"
+    .. _pc .. "/scripts/uosc_staff_credits/?/init.lua;" .. package.path
+```
+
+`title-normalize-test.lua` 另有两处 cwd 依赖（stub 的 `expand-path` 返回值、
+`DICT_PATH`），一并改为 `_pc` 前缀。
+
+**验证**：从 **3 个不同目录**（mpv 根 / `portable_config/` / 无关的 `D:/`）
+各跑一遍 5 个测试，`exit` 全为 0、断言数全对：
+
+| 测试 | 断言 | mpv 根 | portable_config | D:/ |
+|------|-----|--------|-----------------|-----|
+| guess-title-test | 13 | ✅ | ✅ | ✅ |
+| title-normalize-test | 58 | ✅ | ✅ | ✅ |
+| bangumi-user-test | 79 | ✅ | ✅ | ✅ |
+| progress-sync-test | 55 | ✅ | ✅ | ✅ |
+| staff-grid-paging-test | 7 | ✅ | ✅ | ✅ |
+
+> 教训：**测试的「通过判据」不能是 `tail` 出来的几行**。
+> 判据必须是 **`exit code` + 汇总行**（本项目统一打印
+> `结果：N/N 通过` 或 `通过 N，失败 0`）。
+> 批量跑测试时一律用 `exit=$?` 判定，别用肉眼看输出尾部。
