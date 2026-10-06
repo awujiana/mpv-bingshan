@@ -1,6 +1,6 @@
 -- tools/title-normalize-test.lua —— title_normalize 模块回归测试
 --
--- 用法（在 mpv 根目录）：
+-- 用法（任意 cwd 均可 —— 路径基准由脚本自身位置推导）：
 --   ./luajit.exe portable_config/tools/title-normalize-test.lua
 --
 -- 为什么需要它（2026-10-05）：
@@ -12,13 +12,19 @@
 --   这类 bug 用「看一眼代码」发现不了，必须跑真实字符串。
 --   所以这里把「字节类必须换码点」这件事固化成测试。
 
+-- ---- 路径基准：从脚本自身位置反推，使本测试与 cwd 无关 ----
+-- 脚本位于 <mpv根>/portable_config/tools/，故上溯一级即 portable_config。
+-- 原先这里写死相对路径，必须从 mpv 根目录跑；换目录跑会崩在 require 上。
+local _src = debug.getinfo(1, "S").source or "@."
+local _tools_dir = _src:match("^@(.*)[/\\][^/\\]*$") or "."
+local _pc = _tools_dir:match("^(.*)[/\\][^/\\]*$") or "."
+
 -- ---- stub mp ----
 package.preload["mp"] = function()
     return {
         get_property = function() return nil end,
-        -- 注意：真机下 expand-path 会返回真实路径；这里返回相对路径，
-        -- 于是下面的 dofile 用 cwd 相对路径注入字典（等价效果）
-        command_native = function(_, a) return "portable_config/scripts" end,
+        -- 真机下 expand-path 返回真实路径；这里给绝对路径，语义与真机一致
+        command_native = function(_, a) return _pc .. "/scripts" end,
         msg = setmetatable({}, { __index = function() return function() end end }),
         get_time = function() return 0 end,
     }
@@ -27,13 +33,13 @@ package.preload["mp.utils"] = function() return {} end
 package.preload["mp.msg"] = function()
     return setmetatable({}, { __index = function() return function() end end })
 end
-package.path = "portable_config/scripts/uosc_staff_credits/?.lua;"
-    .. "portable_config/scripts/uosc_staff_credits/?/init.lua;" .. package.path
+package.path = _pc .. "/scripts/uosc_staff_credits/?.lua;"
+    .. _pc .. "/scripts/uosc_staff_credits/?/init.lua;" .. package.path
 
 local tn = require("modules.title_normalize")
 
 -- 注入真实字典（若不可达则跳过所有转换类断言）
-local DICT_PATH = "portable_config/scripts/uosc_danmaku/dicts/t2s_chars.lua"
+local DICT_PATH = _pc .. "/scripts/uosc_danmaku/dicts/t2s_chars.lua"
 local dict = dofile(DICT_PATH)
 assert(type(dict) == "table", "找不到 t2s 字典: " .. DICT_PATH)
 tn._set_dict(dict)
@@ -105,6 +111,66 @@ check("残缺字节 → U+FFFD", ok_bad and cps[1], 0xFFFD)
 check("ASCII 解码", tn._codepoints("ABC")[1], 65)
 check("汉字解码(进=U+8FDB)", tn._codepoints("进")[1], 0x8FDB)
 check("假名解码(の=U+306E)", tn._codepoints("の")[1], 0x306E)
+
+print()
+print("== 6. to_standard_name（弹幕 API 名称清洗）==")
+-- 下列输入全部是从真实弹幕 API 抓回来的原文
+local NAME_CASES = {
+    { "无职转生Ⅲ ～到了异世界就拿出真本事～(2026)【TV动画】from dandan",
+      "无职转生Ⅲ ～到了异世界就拿出真本事～" },
+    { "无职转生Ⅱ ～到了异世界就拿出真本事～ 第2部分(2024)【TV动画】from dandan",
+      "无职转生Ⅱ ～到了异世界就拿出真本事～ 第2部分" },
+    { "无职转生Ⅱ ～到了异世界就拿出真本事～(2023)【TV动画】from dandan",
+      "无职转生Ⅱ ～到了异世界就拿出真本事～" },
+    { "無職転生Ⅲ ～異世界行ったら本気だす～(2026)【TV动画】from bahamut",
+      "無職転生Ⅲ ～異世界行ったら本気だす～" },
+    -- 已经是干净的，应保持不变
+    { "进击的巨人", "进击的巨人" },
+    { "无职转生 ～在异世界认真地活下去～", "无职转生 ～在异世界认真地活下去～" },
+    -- ★ 字节陷阱红线：「一」= E4 B8 80，含续接字节 80
+    --   若用 [^】] 这类字节类去剥【】，会把「一」切坏
+    { "第一部 一【TV动画】from x", "第一部 一" },
+    -- 非数字括号不应被剥掉
+    { "无职转生（第一部）", "无职转生（第一部）" },
+    -- 全角括号年份应被剥掉
+    { "进击的巨人（2013）", "进击的巨人" },
+    -- 纯噪声不应被清成空串
+    { "【TV动画】", "【TV动画】" },
+    -- ★ 保护性红线：正片名里本来就有 "from"，不能被当来源标记剥掉
+    { "Escape from Tarkov", "Escape from Tarkov" },
+    { "The Girl from the Other Side", "The Girl from the Other Side" },
+}
+for _, c in ipairs(NAME_CASES) do
+    local got = tn.to_standard_name(c[1])
+    check(string.format("清洗 %q", c[1]), got, c[2])
+end
+
+print()
+print("== 7. 清洗结果必须是合法 UTF-8（不得切坏字符）==")
+local function valid_utf8(s)
+    if not s then return false end
+    local i, n = 1, #s
+    while i <= n do
+        local b = s:byte(i)
+        local need
+        if b < 0x80 then need = 0
+        elseif b >= 0xC2 and b <= 0xDF then need = 1
+        elseif b >= 0xE0 and b <= 0xEF then need = 2
+        elseif b >= 0xF0 and b <= 0xF4 then need = 3
+        else return false end
+        if i + need > n then return false end
+        for k = 1, need do
+            local cc = s:byte(i + k)
+            if not cc or cc < 0x80 or cc > 0xBF then return false end
+        end
+        i = i + need + 1
+    end
+    return true
+end
+for _, c in ipairs(NAME_CASES) do
+    local got = tn.to_standard_name(c[1])
+    check(string.format("UTF-8 合法 %q", got), valid_utf8(got), true)
+end
 
 print(string.rep("-", 76))
 print(string.format("结果：%d/%d 通过", pass, pass + fail))

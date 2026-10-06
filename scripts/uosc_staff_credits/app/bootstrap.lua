@@ -128,6 +128,7 @@ function M.run()
     load_mod("apis.anilist", false)
     load_mod("apis.mal", false)
     load_mod("apis.baike", false)
+    load_mod("apis.bangumi_user", false)   -- v2.0: Bangumi 用户端点（需 token）
     load_mod("modules.danmaku_link", false)
 
     -- 4.4 业务层
@@ -142,6 +143,7 @@ function M.run()
     load_mod("features.production_score_flow", false)
     load_mod("features.subject_select", false)
     load_mod("features.fankuhub_search", false)
+    load_mod("features.progress_sync", false)   -- v2.0: 观看进度同步（需 token）
 
     -- 4.5 表示层
     load_mod("modules.menu", true)          -- 关键
@@ -242,6 +244,7 @@ function M.run()
     local anilist_mod = mods["apis.anilist"]
     local mal_mod = mods["apis.mal"]
     local baike_mod = mods["apis.baike"]
+    local bangumi_user_mod = mods["apis.bangumi_user"]
     local danmaku_link_mod = mods["modules.danmaku_link"]
     local state_mod = mods["app.state"]
     local request_registry_mod = mods["app.request_registry"]
@@ -332,6 +335,14 @@ function M.run()
         request_registry = request_registry_mod,
     }, "baike", false) then return false end
 
+    -- 步骤 10.4: apis.bangumi_user.init(opts, {notify, request_registry})
+    -- v2.0: Bangumi 用户端点（读写收藏/观看进度）。需要 bangumi_token，
+    --       未配置时模块加载成功但 is_enabled() 为 false，不产生任何网络请求。
+    if not init_module(bangumi_user_mod, opts, {
+        notify = notify_mod,
+        request_registry = request_registry_mod,
+    }, "bangumi_user", false) then return false end
+
     -- 步骤 11: danmaku_link.init(opts, {notify})
     if not init_module(danmaku_link_mod, opts, {
         notify = notify_mod,
@@ -388,12 +399,14 @@ function M.run()
         anilist = anilist_mod,
         mal = mal_mod,
         baike = baike_mod,
+        bangumi_user = bangumi_user_mod,
         cards = cards_mod,
         cover_intro = cover_intro_mod,
         production_score = production_score_mod,
         staff_grid = staff_grid_mod,
         data_cache = data_cache_mod,
         opts = opts,
+        script_name = script_name,
         get_danmaku_info = get_danmaku_info,
         get_current_title = get_current_title,
         fallback_to_subject_list_search = fallback_to_subject_list_search,
@@ -408,15 +421,18 @@ function M.run()
     init_feature(mods["features.production_score_flow"], feature_deps, "production_score_flow")
     init_feature(mods["features.subject_select"], feature_deps, "subject_select")
     init_feature(mods["features.fankuhub_search"], feature_deps, "fankuhub_search")
+    init_feature(mods["features.progress_sync"], feature_deps, "progress_sync")
 
-    -- 步骤 15: menu.init(opts, {servers, script_name=script_name, state, opts, runtime_config})
+    -- 步骤 15: menu.init(opts, {servers, script_name=script_name, state, opts, runtime_config, progress_sync})
     -- v1.7: 新增 opts 与 runtime_config 依赖，供 show_settings_menu 读写运行时配置
+    -- v2.0: 新增 progress_sync，主菜单据此插入观看进度条目（未配 token 时返回空表）
     if not init_module(menu_mod, opts, {
         servers = servers_mod,
         script_name = script_name,
         state = state_mod,
         opts = opts,                          -- v1.7
         runtime_config = runtime_config_mod,  -- v1.7
+        progress_sync = mods["features.progress_sync"],  -- v2.0
     }, "menu", true) then return false end
 
     -- 步骤 16: cards.init(opts, {ui_base, panel_registry, input_service, ass_lib, notify, request_registry, utils})
@@ -500,6 +516,8 @@ function M.run()
         feature_production_score_flow = mods["features.production_score_flow"],
         feature_subject_select = mods["features.subject_select"],
         feature_fankuhub_search = mods["features.fankuhub_search"],
+        feature_progress_sync = mods["features.progress_sync"],   -- v2.0
+        bangumi_user = bangumi_user_mod,                          -- v2.0
         script_name = script_name,
         get_danmaku_info = get_danmaku_info,
         get_current_title = get_current_title,

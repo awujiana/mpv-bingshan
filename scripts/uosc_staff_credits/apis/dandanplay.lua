@@ -20,6 +20,7 @@ M.init = init
 local utils_mod = require("modules.utils")
 local url_mod = require("modules.utils.url")
 local net_mod = require("modules.utils.net")
+local title_normalize = require("modules.title_normalize")
 
 -- 错误码（与 api.lua 一致，便于上层统一处理）
 local ERR_NETWORK = "ERR_NETWORK"
@@ -52,6 +53,14 @@ local function http_get_json(url, callback)
     for _, a in ipairs(ssl_args) do table.insert(args, a) end
     table.insert(args, url)
 
+    -- 2026-10-06 修正：必须在闭包**之前**声明 registered_token。
+    --   Lua 局部变量的作用域从声明语句之后才开始。原写法把
+    --   `local registered_token = nil` 放在 mp.command_native_async 之后，
+    --   于是回调闭包里的 registered_token 捕获到的是**全局变量**
+    --   （mpv 环境中为 nil），导致 `if registered_token and ...` 恒为假
+    --   → 注销逻辑**永不执行** → request_registry 随每次请求无界增长。
+    --   这是静默失效：不报错、不崩溃，只是慢慢泄漏。
+    local registered_token = nil
     local abort_handle = mp.command_native_async({
         name = "subprocess",
         capture_stdout = true,
@@ -101,7 +110,6 @@ local function http_get_json(url, callback)
     end)
 
     -- 注册 cancel_fn 到 request_registry
-    local registered_token = nil
     if deps and deps.request_registry and type(deps.request_registry.register) == "function" then
         registered_token = deps.request_registry.register(function()
             pcall(function() mp.abort_async_command(abort_handle) end)
@@ -137,7 +145,14 @@ function M.search(title, callback)
         local candidates = {}
         for _, anime in ipairs(data.animes) do
             if anime.animeTitle and anime.animeTitle ~= "" then
-                table.insert(candidates, anime.animeTitle)
+                -- 2026-10-06：弹幕 API 的 animeTitle 带检索用装饰后缀，
+                -- 形如「无职转生Ⅲ ～…～(2026)【TV动画】from dandan」，
+                -- 直接拿去 Bangumi 搜会因噪声词稀释匹配而搜不到。
+                -- 清洗成标准名后再作为候选。
+                local clean = title_normalize.to_standard_name(anime.animeTitle)
+                if clean and clean ~= "" then
+                    table.insert(candidates, clean)
+                end
             end
         end
 

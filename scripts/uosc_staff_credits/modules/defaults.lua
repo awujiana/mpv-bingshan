@@ -21,6 +21,23 @@ M.defaults = {
     api_server = "",
     danmaku_api_server = "https://api.dandanplay.net",
     tmdb_api_key = "",
+    -- === Bangumi 用户鉴权与观看进度同步 (2026-10-06 新增) ===
+    -- access token，留空则相关功能整体关闭（优雅降级）
+    -- 获取: https://next.bgm.tv/demo/access-token
+    -- 安全: 等同于账号权限，勿提交到 Git
+    bangumi_token = "",
+    -- 是否启用观看进度同步（需 bangumi_token 非空）
+    enable_progress_sync = true,
+    -- 进度同步档位: "off"（仅手动菜单，打开视频零网络请求）
+    --               / "notify"（打开视频读一次进度并提示）
+    --               / "auto"（达阈值后自动标记本集为看过）
+    progress_sync_mode = "off",
+    -- auto 模式触发阈值（播放进度百分比 1-100）
+    progress_sync_threshold = 80,
+    -- 标记时使用的收藏类型（仅当条目尚未收藏时生效）
+    -- ⚠️ Bangumi **新 API** 取值，与旧版文档顺序不同：
+    --    1=想看  2=看过  3=在看  4=搁置  5=抛弃
+    collection_type_on_mark = 3,
     timeout = 8,  -- v1.9: loading 倒计时显示超时（秒）。fankuhub 快速路径通常 2-3s 返回，bangumi 5-8s
     -- v1.9.1: 网络请求超时（curl --max-time），独立于 loading 显示超时
     --       persons/characters 等详情端点数据量大（尤其热门番剧），需要比搜索更长的超时

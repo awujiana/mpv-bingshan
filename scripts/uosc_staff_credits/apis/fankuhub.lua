@@ -49,6 +49,14 @@ local function http_get_json(url, callback)
     for _, a in ipairs(ssl_args) do table.insert(args, a) end
     table.insert(args, url)
 
+    -- 2026-10-06 修正：必须在闭包**之前**声明 registered_token。
+    --   Lua 局部变量的作用域从声明语句之后才开始。原写法把
+    --   `local registered_token = nil` 放在 mp.command_native_async 之后，
+    --   于是回调闭包里的 registered_token 捕获到的是**全局变量**
+    --   （mpv 环境中为 nil），导致 `if registered_token and ...` 恒为假
+    --   → 注销逻辑**永不执行** → request_registry 随每次请求无界增长。
+    --   这是静默失效：不报错、不崩溃，只是慢慢泄漏。
+    local registered_token = nil
     local abort_handle = mp.command_native_async({
         name = "subprocess",
         capture_stdout = true,
@@ -96,7 +104,6 @@ local function http_get_json(url, callback)
         if callback then callback(true, data, nil) end
     end)
 
-    local registered_token = nil
     if deps and deps.request_registry and type(deps.request_registry.register) == "function" then
         registered_token = deps.request_registry.register(function()
             pcall(function() mp.abort_async_command(abort_handle) end)

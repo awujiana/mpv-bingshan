@@ -343,20 +343,23 @@ c script-message-to uosc_staff_credits staff-credits-set-config enable_data_cach
 
 ## 附录：配置项速查表
 
-按字母顺序排列的全部 24 个 script-opts 配置项：
+按字母顺序排列的全部 29 个 script-opts 配置项：
 
 | 名称 | 类型 | 默认值 | 运行时可调 |
 |------|------|--------|------------|
 | `api_base_url` | string | `https://api.bangumi.one` | 否 |
 | `api_server` | string | `""` | 否（仅首次导入） |
 | `autoload_with_danmaku` | boolean | `true` | 否 |
+| `bangumi_token` | string | `""` | 否 |
 | `cacert_path` | string | `""` | 否 |
+| `collection_type_on_mark` | number | `3` | 否 |
 | `danmaku_api_server` | string | `https://api.dandanplay.net` | 否 |
 | `data_cache_days` | number | `30` | 是 |
 | `data_source` | string | `auto` | 否 |
 | `debug` | boolean | `true` | 是 |
 | `enable_data_cache` | boolean | `true` | 是 |
 | `enable_extra_search` | boolean | `true` | 否 |
+| `enable_progress_sync` | boolean | `true` | 否 |
 | `fankuhub_api_base` | string | `https://fankuhub.com` | 否 |
 | `history_path` | string | `~~/staff-credits-history.json` | 否 |
 | `image_cache_days` | number | `30` | 是 |
@@ -364,6 +367,8 @@ c script-message-to uosc_staff_credits staff-credits-set-config enable_data_cach
 | `max_results` | number | `10` | 否 |
 | `mpv_path` | string | `""` | 否 |
 | `pagination_position` | string | `bottom` | 是 |
+| `progress_sync_mode` | string | `off` | 否 |
+| `progress_sync_threshold` | number | `80` | 否 |
 | `request_timeout` | number | `15` | 否 |
 | `silent_preload_depth` | string | `all` | 是 |
 | `ssl_no_revoke` | boolean | `true` | 否 |
@@ -373,6 +378,23 @@ c script-message-to uosc_staff_credits staff-credits-set-config enable_data_cach
 | `user_agent` | string | `uosc_staff_credits (https://github.com/user/uosc_staff_credits)` | 否 |
 
 **运行时可调项共 6 个**：`data_cache_days`、`image_cache_days`、`silent_preload_depth`、`pagination_position`、`enable_data_cache`、`debug`。
+
+### Bangumi 观看进度相关的 5 项（2026-10-06 新增）
+
+| 名称 | 说明 |
+|------|------|
+| `bangumi_token` | Bangumi access token。留空则相关功能整体关闭（优雅降级）。获取：<https://next.bgm.tv/demo/access-token> |
+| `enable_progress_sync` | 总开关。`no` 时不发起任何带 token 的请求 |
+| `progress_sync_mode` | `off`（默认，打开视频零网络请求）/ `notify`（读一次进度并提示）/ `auto`（达阈值后自动标记本集看过） |
+| `progress_sync_threshold` | `auto` 档的触发阈值（播放进度百分比 1-100）。默认 80 |
+| `collection_type_on_mark` | 条目**尚未收藏**时写入的收藏类型。默认 `3`=在看 |
+
+> ⚠️ `collection_type_on_mark` 用的是 Bangumi **新 API** 取值，与很多旧教程相反：
+> `1`=想看 `2`=看过 **`3`=在看** `4`=搁置 `5`=抛弃（2 是「看过」、3 是「在看」）。
+>
+> ⚠️ 表中 `danmaku_api_server` 列的是**代码默认值**（官方源）。
+> 随包附带的 `script-opts/uosc_staff_credits.conf` 把它指向了自建镜像，
+> 以实际配置文件为准。
 
 ---
 

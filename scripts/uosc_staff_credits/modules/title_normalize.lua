@@ -254,4 +254,130 @@ function M.normalize(title)
     return converted, converted ~= title
 end
 
+-- ============================================================================
+-- to_standard_name: 把弹幕 API 的 animeTitle 清洗成「可搜索的标准名」
+-- ============================================================================
+-- 背景（2026-10-06）：
+--   弹幕 API 返回的 animeTitle 带了一堆检索用的装饰后缀，例如
+--     无职转生Ⅲ ～到了异世界就拿出真本事～(2026)【TV动画】from dandan
+--     无职转生Ⅱ ～到了异世界就拿出真本事～ 第2部分(2024)【TV动画】from dandan
+--   直接拿这串去 Bangumi 搜是搜不到的（噪声词会稀释匹配），
+--   必须清洗成
+--     无职转生Ⅲ ～到了异世界就拿出真本事～
+--     无职转生Ⅱ ～到了异世界就拿出真本事～ 第2部分
+--
+-- 剥离三类尾部噪声（反复剥离，因为可能叠加）：
+--   1. `from xxx`      —— 数据来源标记（ASCII，正则安全）
+--   2. `【...】`       —— 类型标记，如【TV动画】（⚠️ 见下）
+--   3. `(1999)`        —— 4 位年份（ASCII，正则安全）
+--
+-- ⚠️ 为什么【...】不能直接用 `【[^】]*】`：
+--   又是「Lua 字符类是字节集」这个坑（本项目已踩 4 次）。
+--   `】` = E3 80 91，于是 `[^】]` 是**字节集**取反 {E3, 80, 91}，
+--   任何含续接字节 80 或 91 的汉字（如「一」= E4 B8 80）都会被中途截断。
+--   本用例里【TV动画】恰好不含这些字节才侥幸能用 —— 但这是运气，不是正确。
+--   ⇒ 统一改用「按 UTF-8 字符回扫」的写法。
+
+-- 复用模块顶部的 utf8_codepoints 同级思路，这里需要的是「字符串」而非码点
+local UTF8_UNIT = "[%z\1-\127\194-\244][\128-\191]*"
+
+local function utf8_units(s)
+    local t = {}
+    for u in s:gmatch(UTF8_UNIT) do t[#t + 1] = u end
+    return t
+end
+
+-- 剥掉尾部成对的「左括号…右括号」（按整字符比较，绝不切坏多字节字符）
+-- s: 输入串；l, r: 左/右括号字符（如 "【" "】"）
+-- digits_only: 为 true 时，仅当括号内容全为数字才剥离（避免误伤「（第一部）」）
+local function strip_trailing_pair(s, l, r, digits_only)
+    local u = utf8_units(s)
+    -- 先吃掉尾部空白
+    while #u > 0 and u[#u]:match("^%s$") do u[#u] = nil end
+    if #u == 0 or u[#u] ~= r then return s end
+    -- 从右往左找配对的左括号
+    local i = #u - 1
+    while i >= 1 and u[i] ~= l do i = i - 1 end
+    if i < 1 then return s end
+    -- 内容校验（可选）
+    if digits_only then
+        local has = false
+        for k = i + 1, #u - 1 do
+            local c = u[k]
+            if c:match("^%d$") then
+                has = true
+            elseif not c:match("^%s$") then
+                return s   -- 含非数字非空白 → 不剥
+            end
+        end
+        if not has then return s end
+    end
+    -- 丢弃 i..#u 整段（含括号）
+    local out = {}
+    for k = 1, i - 1 do out[#out + 1] = u[k] end
+    local res = table.concat(out)
+    return (res:gsub("%s+$", ""))
+end
+
+-- 剥掉尾部的 "from <来源>" 标记
+--
+-- ⚠️ 两个实测坑（2026-10-06）：
+--   1. 真实返回是 `【TV动画】from dandan` —— `】` 与 `from` **之间没有空格**，
+--      所以 `%s+from` 这种写法**永远不匹配**（我第一版就栽在这）。
+--   2. 若放宽成 `from%s+%w+$`，会把正片名 `Escape from Tarkov` 误剥成 `Escape`。
+--
+-- ⇒ 判据：只有**紧跟在 】 / ) / ）之后**（或位于串首）的 `from` 才认定为来源标记。
+--   这一约束既覆盖了实际格式，又不会误伤正常片名。
+local function strip_trailing_from(s)
+    local u = utf8_units(s)
+    -- 从尾部跳过空白，收集结尾的 word 段
+    local n = #u
+    while n >= 1 and u[n]:match("^%s$") do n = n - 1 end
+    local e = n
+    while n >= 1 and u[n]:match("^[%w_%.%-]$") do n = n - 1 end
+    if n >= e then return s end            -- 尾部没有 word 段
+    -- 跳过 word 段前的空白，期望读到 "from"
+    local k = n
+    while k >= 1 and u[k]:match("^%s$") do k = k - 1 end
+    if k < 4 then return s end
+    if not (u[k] == "m" and u[k - 1] == "o" and u[k - 2] == "r" and u[k - 3] == "f") then
+        return s
+    end
+    local before = k - 4                    -- from 前面那个字符的下标
+    if before >= 1 then
+        local b = u[before]
+        -- 只认噪声分隔符后的 from，避免误伤 "Escape from Tarkov"
+        if b ~= "】" and b ~= ")" and b ~= "）" then return s end
+    end
+    local out = {}
+    for i = 1, before do out[#out + 1] = u[i] end
+    local res = table.concat(out)
+    return (res:gsub("%s+$", ""))
+end
+
+-- to_standard_name: 返回清洗后的标准名；无法清洗时原样返回
+function M.to_standard_name(s)
+    if type(s) ~= "string" or s == "" then return s end
+
+    local t = s
+    local prev
+    repeat
+        prev = t
+        -- 1. 尾部 "from <来源>"（要求前面是 】 / ) / ））
+        t = strip_trailing_from(t)
+        -- 2. 尾部 "【...】"（类型标记）—— UTF-8 安全
+        t = strip_trailing_pair(t, "【", "】")
+        -- 3. 尾部 "(1999)" 年份
+        t = t:gsub("%s*%(%d%d%d%d%)%s*$", "")
+        -- 4. 尾部 "（1999）" 全角括号年份（仅当括号内是数字才剥）
+        t = strip_trailing_pair(t, "（", "）", true)
+        -- 5. 收尾空白
+        t = t:gsub("%s+$", "")
+    until t == prev
+
+    -- 全部剥光说明原串本来就是纯噪声，此时回退原串更安全
+    if t == "" then return s end
+    return t
+end
+
 return M

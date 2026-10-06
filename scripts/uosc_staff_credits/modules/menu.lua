@@ -284,14 +284,25 @@ function M.show_main_menu()
         value = "script-message-to " .. script_name .. " staff-credits-production-score",
         keep_open = false,
     })
-    -- 7. 分隔项
+    -- 7. 观看进度（v2.0，需 bangumi_token）
+    --    未配 token 时 progress_sync.build_menu_items() 返回空表 → 此处自动跳过，
+    --    不会在菜单里留下点不动的死项。
+    if deps.progress_sync and type(deps.progress_sync.build_menu_items) == "function" then
+        local ok, ps_items = pcall(deps.progress_sync.build_menu_items)
+        if ok and type(ps_items) == "table" then
+            for _, item in ipairs(ps_items) do
+                table.insert(items, item)
+            end
+        end
+    end
+    -- 8. 分隔项
     table.insert(items, {
         title = "─── 设置 ───",
         italic = true,
         unselectable = true,
         keep_open = true,
     })
-    -- 8. 网站优先级
+    -- 9. 网站优先级
     table.insert(items, {
         title = "网站优先级",
         icon = "swap_vert",
@@ -299,7 +310,7 @@ function M.show_main_menu()
         value = "script-message-to " .. script_name .. " staff-credits-servers",
         keep_open = false,
     })
-    -- 9. 搜索设置
+    -- 10. 搜索设置
     table.insert(items, {
         title = "搜索设置",
         icon = "settings",
@@ -307,7 +318,7 @@ function M.show_main_menu()
         value = "script-message-to " .. script_name .. " staff-credits-settings",
         keep_open = false,
     })
-    -- 10. 清除当前视频缓存
+    -- 11. 清除当前视频缓存
     table.insert(items, {
         title = "清除当前视频缓存",
         icon = "delete",
@@ -315,7 +326,7 @@ function M.show_main_menu()
         value = "script-message-to " .. script_name .. " staff-credits-clear-cache",
         keep_open = false,
     })
-    -- 11. 清除所有缓存
+    -- 12. 清除所有缓存
     table.insert(items, {
         title = "清除所有缓存",
         icon = "delete_sweep",

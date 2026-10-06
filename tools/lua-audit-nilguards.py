@@ -49,20 +49,42 @@ for path in FILES:
     # 判断某行是否为注释（-- 开头，或 doxygen --[[ ]] 块内）。
     # 必须排除注释，否则会把「解释这个 bug 的注释」和「示例代码」误报为 bug
     # —— 工具误报比没有工具更糟，会训练人忽略告警。
+    #
+    # ⚠️ 2026-10-06 修正：初版对块注释是「从当前行往前找未闭合的 --[[」逐行判定，
+    #    但块内**第 2 行起**往前扫到 `--[[` 那一行时 opens/closes 正好抵消，
+    #    判定立刻返回 False —— 于是块注释中段的正文被当成了代码。
+    #    实测后果：chapterskip.lua 头部注释里的 "chapterskip.lua"、
+    #    hash.lua 注释里的 "sha256" 都被当成变量引用，凭空多出 5 条误报。
+    #    改为**一次性预扫**整份文件，标记块注释区间。
+    block_comment = [False] * len(lines)
+    in_block = False
+    for k, l in enumerate(lines):
+        if in_block:
+            block_comment[k] = True
+        pos = 0
+        while pos < len(l):
+            if in_block:
+                end = l.find(']]', pos)
+                if end == -1:
+                    break
+                in_block = False
+                pos = end + 2
+            else:
+                c = l.find('--', pos)
+                if c == -1:
+                    break
+                if l.startswith('--[[', c):
+                    in_block = True
+                    block_comment[k] = True
+                    pos = c + 4
+                else:
+                    # 普通行注释：本行剩余全是注释，不可能再起块
+                    break
+
     def is_comment(idx):
-        ln = lines[idx].lstrip()
-        if ln.startswith('--'):
+        if block_comment[idx]:
             return True
-        # 块注释 --[[ ... ]] 的简单判定：向前找未闭合的 --[[
-        depth = 0
-        for j in range(idx, -1, -1):
-            l = lines[j]
-            opens = l.count('--[[')
-            closes = l.count(']]')
-            depth += opens - closes
-            if depth <= 0:
-                return False
-        return depth > 0
+        return lines[idx].lstrip().startswith('--')
 
     def code_of(idx):
         """返回该行去掉行尾注释后的部分，用于规则匹配。"""
@@ -188,6 +210,145 @@ for path in FILES:
                 add('P0', 'D/模块不可达', path, i, ln,
                     "require '%s' 指向 %s，但本文件未 prepend package.path "
                     "→ mpv 只搜 <mpv根>/lua/，加载会失败" % (mod, candidate))
+
+    # E. 局部变量在闭包中被引用，但 `local X = nil` 声明在其**后**
+    #
+    #    2026-10-06 新增。Lua 的局部变量作用域**从声明语句之后**才开始，
+    #    所以把 `local X = nil` 写在引用它的回调闭包之后，闭包里的 X 会
+    #    绑定到**全局变量**（mpv 环境中为 nil）：
+    #        local h = mp.command_native_async({...}, function(...)
+    #            if X and ... then ... end     -- X 是全局 nil → 恒为假
+    #        end)
+    #        local X = nil                      -- ← 太晚了，闭包看不到
+    #    结果：那个分支**永不执行**，不报错、不崩溃 —— 又一例「守卫掩盖的静默失效」。
+    #
+    #    实测：本项目 7 个文件（apis/*.lua + modules/api.lua）全栽在这个模式上，
+    #    变量名都是 registered_token，后果是 cancel_fn 永不从 request_registry
+    #    注销 → 随每次请求无界增长。
+    #
+    #    ⚠️ 本规则的取向是「宁可漏报，不可误报」。初版只看缩进，一跑就 22 条，
+    #    **全是误报**：把字符串内容（`"servers",`）、表字段（`title = title,`）、
+    #    以及别的函数里恰好同名的局部量都算了进来。误报比没有工具更糟，
+    #    所以这里加了 4 道抑制：
+    #      (1) 先抹掉字符串字面量与注释再匹配 —— `"servers"` 不是引用
+    #      (2) 字段位置不算引用 —— `.X` / `:X(` / 表字段 `X = v,`
+    #      (3) 文件更早处（含同一行内、`X` 出现位置之前）已存在**同名绑定**
+    #          （local 声明 / for 循环变量 / 函数参数）则跳过 ——
+    #          说明那个引用绑的是别的变量，不是全局
+    #      (4) 引用缩进必须严格大于声明缩进 —— 引用得在更深的嵌套块里
+    #    代价：若同一文件更早处恰好有同名局部量，真缺陷会被漏掉。
+    #    可接受 —— `registered_token` / `cancel_fn` 这类名字极不可能重名。
+    def _strip_code(line):
+        """抹掉字符串字面量内容与注释，只留代码骨架（不处理 [[ ]] 长串）。"""
+        out, i, n, quote = [], 0, len(line), None
+        while i < n:
+            c = line[i]
+            if quote:
+                if c == '\\':
+                    i += 2
+                    continue
+                if c == quote:
+                    quote = None
+                    out.append(c)
+                i += 1
+                continue
+            if c in ('"', "'"):
+                quote = c
+                out.append(c)
+                i += 1
+                continue
+            if line.startswith('--', i):
+                break
+            out.append(c)
+            i += 1
+        return ''.join(out)
+
+    def _binds_name(name, code):
+        """该行是否**声明/绑定**了 name（local 声明、for 循环变量、函数参数）。"""
+        esc = re.escape(name)
+        if re.search(r'\blocal\s+[^=]*\b%s\b' % esc, code):
+            return True
+        for hm in re.finditer(r'\bfor\s+([A-Za-z_][\w\s,]*?)\s*(?:in\b|=)', code):
+            if re.search(r'\b%s\b' % esc, hm.group(1)):
+                return True
+        for pm in re.finditer(r'function\s*[^()]*\(([^()]*)\)', code):
+            if re.search(r'\b%s\b' % esc, pm.group(1)):
+                return True
+        return False
+
+    def _is_binding_here(code, start, end):
+        """该出现处**本身**就是声明点（`local X` / `for X in` / 函数参数）。"""
+        prefix = code[:start]
+        if re.search(r'\blocal\s+[^=]*$', prefix):
+            return True
+        if re.search(r'\bfor\s+[^=]*$', prefix):
+            return True
+        fpos = prefix.rfind('function')
+        if fpos >= 0:
+            tail = prefix[fpos:]
+            if tail.count('(') > tail.count(')'):
+                return True
+        return False
+
+    def _is_field(code, start, end):
+        """name 出现在 [start,end) 处，是否为字段名/字段访问而非变量引用。"""
+        p = start - 1
+        while p >= 0 and code[p] in ' \t':
+            p -= 1
+        if p >= 0 and code[p] in '.:':
+            return True
+        q = end
+        while q < len(code) and code[q] in ' \t':
+            q += 1
+        if q < len(code) and code[q] == '=' and not code.startswith('==', q):
+            return True
+        return False
+
+    decl_res = [
+        re.compile(r'^(\s*)local\s+([A-Za-z_]\w*)\s*=\s*nil\s*(?:--.*)?$'),
+        # `local function f()` 同理：函数体里引用**后面才定义**的 f 会绑到全局。
+        # 2026-10-06 补：我自己在 apis/bangumi_user.lua 里把
+        # `local function do_request` 写在 M.request **之后**，M.request 里的
+        # do_request 编译成了全局引用 → 运行时 attempt to call a nil value。
+        # 只认 `local X = nil` 的初版判据漏掉了这一类。
+        re.compile(r'^(\s*)local\s+function\s+([A-Za-z_]\w*)\s*\('),
+    ]
+    for i, ln in enumerate(lines):
+        if is_comment(i):
+            continue
+        m = None
+        for r in decl_res:
+            m = r.match(ln)
+            if m:
+                break
+        if not m:
+            continue
+        name = m.group(2)
+        if len(name) < 3:          # 跳过 i/j/k/n 这类临时变量
+            continue
+        decl_indent = len(m.group(1))
+        ref_re = re.compile(r'\b%s\b' % re.escape(name))
+        for j in range(i):
+            if is_comment(j):
+                continue
+            code = _strip_code(lines[j])
+            # (1)+(2) 只剩真正的**变量引用**位置（排除字符串、字段名、声明点本身）
+            if not any(not _is_field(code, mm.start(), mm.end())
+                       and not _is_binding_here(code, mm.start(), mm.end())
+                       for mm in ref_re.finditer(code)):
+                continue
+            # (4) 引用必须落在更深的嵌套块里
+            if len(lines[j]) - len(lines[j].lstrip()) <= decl_indent:
+                continue
+            # (3) 更早处已有同名绑定 → 该引用绑的不是全局
+            if any(_binds_name(name, _strip_code(lines[k])) for k in range(j)):
+                continue
+            add('P1', 'E/闭包捕获全局（声明晚于引用）', path, i + 1, ln,
+                "第 %d 行在更深缩进处引用了 '%s'，而它的 local 声明到第 %d 行"
+                "才出现 → 闭包绑定的是全局变量（mpv 中为 nil），守卫恒为假 / "
+                "调用即 attempt to call a nil value，该分支静默失效"
+                % (j + 1, name, i + 1))
+            break
 
 # 输出
 P0 = [f for f in findings if f[0] == 'P0']

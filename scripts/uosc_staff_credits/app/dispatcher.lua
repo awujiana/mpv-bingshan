@@ -258,6 +258,14 @@ local function path_observer(_name, path)
 
     -- 7. 触发静默加载
     pcall(trigger_silent_load, path)
+
+    -- 8. 观看进度同步（v2.0）
+    --    未配 token、或 progress_sync_mode=off（默认）时，内部直接返回，
+    --    不产生任何网络请求。只有显式开了 notify/auto 才会去读进度。
+    if deps.feature_progress_sync
+       and type(deps.feature_progress_sync.on_file_loaded) == "function" then
+        pcall(deps.feature_progress_sync.on_file_loaded, path)
+    end
 end
 
 -- ============ 脚本消息处理函数 ============
@@ -506,6 +514,12 @@ local function handle_clear_all()
         pcall(deps.history.clear_all)
     end
 
+    -- 清空观看进度同步的缓存（剧集列表 + 已自动标记记录）
+    if deps.feature_progress_sync
+       and type(deps.feature_progress_sync.clear_cache) == "function" then
+        pcall(deps.feature_progress_sync.clear_cache)
+    end
+
     if deps.notify then deps.notify.info("已清除所有缓存") end
 end
 
@@ -514,6 +528,29 @@ local function handle_settings()
     if deps.menu and type(deps.menu.show_settings_menu) == "function" then
         pcall(deps.menu.show_settings_menu)
     end
+end
+
+-- ============ 观看进度同步（v2.0，需 bangumi_token）============
+
+-- staff-credits-mark-watched → 把当前这一集标记为看过
+local function handle_mark_watched()
+    local ps = deps.feature_progress_sync
+    if not ps or type(ps.mark_current_episode) ~= "function" then
+        if deps.notify then deps.notify.warn("观看进度同步模块不可用") end
+        return
+    end
+    -- 模块内部会把「缺 token / 没识别条目 / 认不出集数」分别讲清楚
+    pcall(ps.mark_current_episode, nil)
+end
+
+-- staff-credits-show-progress → 读取并提示当前条目的收藏状态
+local function handle_show_progress()
+    local ps = deps.feature_progress_sync
+    if not ps or type(ps.show_progress) ~= "function" then
+        if deps.notify then deps.notify.warn("观看进度同步模块不可用") end
+        return
+    end
+    pcall(ps.show_progress)
 end
 
 -- staff-credits-servers → menu.show_servers_menu()
@@ -672,6 +709,9 @@ function M.register_all()
     -- v1.7: 运行时配置（持久化到 ~~/staff-credits-runtime-config.json）
     mp.register_script_message("staff-credits-set-config", handle_set_config)
     mp.register_script_message("staff-credits-config", handle_config)
+    -- v2.0: 观看进度同步（需 bangumi_token）
+    mp.register_script_message("staff-credits-mark-watched", handle_mark_watched)
+    mp.register_script_message("staff-credits-show-progress", handle_show_progress)
 
     -- 3. path observer：路径切换处理
     mp.observe_property("path", "native", path_observer)

@@ -899,3 +899,179 @@ cd .. && ./mpv.exe --vo=null --ao=null --frames=1 --msg-level=all=info \
 > ⚠️ `guess-title-test.lua` 与 `title-normalize-test.lua` 在**两个目录**下行为不同：
 > `title-normalize-test.lua` 依赖 cwd 相对路径读字典，必须从 mpv 根目录跑；
 > `lua-syntax-check.lua` / `osd-button-drift-regression.lua` 必须从 `portable_config/` 跑。
+
+---
+
+## 11. 弹幕 API 接入 + 标准名清洗 + Bangumi 观看进度（2026-10-06 三轮）
+
+### 11.1 需求与落点
+
+| 需求 | 落点 |
+|------|------|
+| 自定义弹幕 API 接进 `uosc_danmaku` | `script-opts/uosc_danmaku.conf` 的 `api_server` |
+| 弹幕 API 的「剧集标准名」流程接进本项目 | `apis/dandanplay.lua` 的 `M.search` |
+| 只取**能在 Bangumi 搜到**的标准名 | 新增 `modules/title_normalize.lua::to_standard_name` |
+| 用 token 保存观看集 | 新增 `apis/bangumi_user.lua` + `features/progress_sync.lua` |
+| 弹幕 API 与 token 都可配 | `script-opts/uosc_staff_credits.conf`（5 个新配置项） |
+
+### 11.2 弹幕 API：token 在**路径**里，所以只需改配置
+
+`https://dm.wodenas.xin/xiatianembydmww` 与 `dm.ljiaovm.com` 都是
+`huangxd-/danmu_api`（LogVar弹幕API）的部署，对外提供 **dandanplay 兼容端点**，
+所以 `uosc_danmaku` 可直接用。关键发现：
+
+- 鉴权 token 是 **URL 路径的一段**（`http://{ip}:9321/{TOKEN}`），**不是** HTTP 头；
+- 配置项 `api_server` 会被原样拼上 `/api/v2/...`，所以整串（含 token）填进去即可；
+- 结论：**纯配置改动，无需动脚本** —— 满足「能就加到配置文件中」。
+- `dm.ljiaovm.com` 拿不到 token（无 token 与默认 `87654321` 均 401），已移除并注明。
+
+真机验证（临时探针，验完即删）：搜索返回真实结果，`load-danmaku` 加载
+**2538 条弹幕**，`danmaku-count=2538`。
+
+> 两个测试坑：`uosc_danmaku/main.lua` 的 `duration < 60` 门槛会拦住短视频的自动加载；
+> `playback_only="yes"` 的 curl 会在播放结束时被 SIGTERM（看起来像网络错误）。
+
+### 11.3 标准名清洗：`to_standard_name`
+
+弹幕 API 返回的 `animeTitle` 形如 `某番【TV动画】from dandan`，
+直接拿去搜 Bangumi 会失败。新增 `to_standard_name` 逐层剥掉：
+
+1. `from <来源>` —— ⚠️ 真实格式里 `】` 与 `from` **之间没有空格**，
+   初版按 `%s+from` 匹配，结果一条都剥不掉；
+   同时**不能**用宽松的 `from%s+%w+$`，否则会误伤 `Escape from Tarkov`。
+   现判据：`from` 之前必须是 `】` / `)` / `）`。
+2. `【...】` 包裹的标签
+3. 结尾的 `(1999)` 年份
+4. 结尾的 `（第一部）` 这类**纯数字/序号**括号（带 `digits_only` 开关，
+   否则会误伤 `The Girl from the Other Side`）
+
+### 11.4 Bangumi 用户端点：按官方规格逐条核对后才发现的三处错误
+
+规范源：`github.com/bangumi/api` → `open-api/v0.yaml`（经 jsDelivr 取，见 §11.7）。
+
+| 项 | 初版（凭记忆写的旧文档） | 规范实际 | 后果 |
+|----|------------------------|---------|------|
+| 批量更新集进度 | `POST .../episodes` | **`PATCH`** | 405 |
+| 更新单集进度 | `PATCH .../-/episodes/{id}` | **`PUT`** | 405 |
+| 写操作响应体 | 当作必须有 JSON | **204 无响应体** | 写成功却报「空响应」失败 |
+
+三者叠加后特别难查：curl 未加 `--fail`，405 的响应体不是 `ErrorDetail`，
+会被报成「json 解析失败」——**报错信息指向完全无关的地方**。
+
+修正后：
+- `M.request(method, path, body, cb, expect_body)`，
+  `expect_body` 省略时**按方法推断**（`GET` 才有 body）；
+- 内部拆出 `do_request(..., token, ...)`，token 为 nil 时不带鉴权头，
+  供**公开端点** `GET /v0/episodes?subject_id=` 复用（取剧集列表**不需要 token**）；
+- 错误体判据收敛为 `title and description`（= `ErrorDetail` 的 required），
+  删掉多余的 `and not data.id and not data.type`（已核对三个成功 schema 都不含
+  `title`/`description`，那两个守卫是死代码）。
+
+「集数 → `episode_id`」用 `GET /v0/episodes` 的 `sort` 字段映射
+（退而比 `ep`）。越界时明确报 `ERR_NOT_FOUND`，**绝不静默标错集**。
+
+### 11.5 观看进度：三档语义与「不该写就绝不写」
+
+`progress_sync_mode`：
+- `off`（默认）—— 只在手动点菜单时联网，**打开视频零网络请求**；
+- `notify` —— 打开视频读一次进度并提示；
+- `auto` —— 再叠加：播放进度达 `progress_sync_threshold`%（默认 80）后自动标记，
+  每个视频只标一次。
+
+卡阈值的理由：一打开就标记会把「点错、看 30 秒就关掉」也记成看过，弄脏收藏记录。
+
+菜单项在**未配 token 时返回空表**（不在主菜单留点不动的死项）；
+配了 token 但暂不可用（没搜索过 / 认不出集数）则显示**置灰项 + 原因**。
+
+### 11.6 顺带修掉的真缺陷：`staff_grid.lua` 翻页必崩
+
+扩展静态审计规则 E（见 §11.7）后扫出来的**既有**缺陷：
+
+```lua
+local function page_up()  ... render() ... end   -- 106 行
+local function render()   ...                end  -- 157 行 ← 太晚
+```
+
+Lua 局部量作用域从声明之后才开始 ⇒ `page_up`/`page_down` 里的 `render`
+编译成**全局读取**。触发条件很普通：职员表条目多到能翻页时按 LEFT/RIGHT
+或点翻页箭头。实测证据：
+
+```
+staff_grid.lua:114: attempt to call global 'render' (a nil value)
+staff_grid.lua:130: attempt to call global 'render' (a nil value)
+debug.getupvalue(page_down) → 上值只有 state，没有 render
+```
+
+已改为标准前向声明（先 `local render`，后 `render = function() ... end`），
+并新增回归测试 `tools/staff-grid-paging-test.lua`。
+
+> 初版探针只给 40 个条目 —— 一屏装得下，`max_offset=0`，翻页分支提前 return，
+> 测试「静静地通过」了。必须给 500 个条目才能让分支可达。
+
+### 11.7 门禁与工具的改动
+
+| 工具 | 改动 |
+|------|------|
+| `lua-audit-nilguards.py` | Rule E 从「只看缩进」升级为 4 道抑制 + 支持 `local function` |
+| 同上 | 修 `is_comment`：块注释改为**一次性预扫**（原来块内第 2 行起判不出来） |
+| `lua-audit-nilguards-selftest.py` | E 用例扩到 9 个（3 必报 / 6 必静默），行号改用 `--E:EXPECT` 标记反查 |
+| `uosc-verify-menu-routes.py` | **新增**：菜单项发出的 `script-message` 必须有注册 |
+
+Rule E 的收敛过程值得记一笔：初版只看「引用缩进 > 声明缩进」，一跑 **22 条全是误报**
+（字符串内容 `"servers"`、表字段 `title = title`、别的函数里的同名局部量…）。
+误报比没有工具更糟，于是加抑制：先剥字符串与注释、排除字段位置、
+排除「更早处已有同名绑定」（local / for 循环变量 / 函数参数）。
+现在 187 个真实文件 **0 命中**，同时 3 类真缺陷必报。
+
+新门禁 `uosc-verify-menu-routes.py` 补的是一个**实测确认过的盲区**：
+原有两道「路由」门禁都只解析 `uosc.conf` 的 `controls=` 行（只管工具栏按钮），
+菜单项里的 `value = "script-message-to ... <route>"` **完全没人检查**。
+把 `register_script_message("staff-credits-mark-watched", ...)` 整行删掉，
+`uosc-verify-routes.py` 依然报「未注册: 0」。
+
+### 11.8 新增测试
+
+| 测试 | 断言数 | 覆盖 |
+|------|-------|------|
+| `tools/bangumi-user-test.lua` | 79 | 方法/URL/鉴权头/204 空体/错误体/编排/脱敏/剧集映射 |
+| `tools/progress-sync-test.lua` | 55 | 三档语义、零请求克制、解析失败不写、防重复标记 |
+| `tools/staff-grid-paging-test.lua` | 7 | 翻页回调不再读到全局 `render` |
+
+三个测试都做过**变异验证**（把缺陷改回去，确认测试真的报错），
+并记录了 1 个**等价变异**（`auto_tick` 里的 `auto_marked` 守卫冗余），
+避免后人误以为是漏测而补假用例。
+
+> `progress-sync-test.lua` 的定时器桩踩过一个坑：初版 `tick()` 边遍历边触发，
+> 于是刚挂上的定时器在同一轮就跑了并被自己 kill —— 两个防重复守卫互相掩盖，
+> 变异测试才发现。现改为**先快照再触发**（真实周期定时器不会在创建瞬间回调）。
+
+### 11.9 门禁清单（本轮实测）
+
+```bash
+# 在 portable_config/ 下
+../luajit.exe tools/lua-syntax-check.lua             # 1. 语法：188/188
+../luajit.exe tools/osd-button-selftest.lua          # 2. 自测：16/16
+../luajit.exe tools/osd-button-drift-regression.lua  # 3. 漂移：旧漏判/新命中
+python tools/uosc-verify-buttons.py                  # 4. 按钮：未注册 0
+python tools/uosc-verify-routes.py                   # 5. 工具栏路由：未注册 0
+python tools/uosc-verify-menu-routes.py              # 6. 菜单路由：本项目未注册 0  ★新
+python tools/lua-audit-nilguards.py                  # 7. 审计：P0/P1 = 0
+python tools/lua-audit-nilguards-selftest.py         # 8. 金丝雀：规则有效
+# 在 mpv 根目录下
+./luajit.exe portable_config/tools/bangumi-user-test.lua      #  9. 79/79   ★新
+./luajit.exe portable_config/tools/progress-sync-test.lua     # 10. 55/55   ★新
+./luajit.exe portable_config/tools/staff-grid-paging-test.lua # 11. 7/7     ★新
+./luajit.exe portable_config/tools/guess-title-test.lua       # 12. 13/13
+./luajit.exe portable_config/tools/title-normalize-test.lua   # 13. 58/58
+```
+
+> ⚠️ 真机冒烟**必须加 `--no-idle`**：本项目 `mpv.conf` 第 105 行设了 `idle=yes`，
+> 裸跑会一直挂着，被外层超时 SIGTERM 掉，**日志一条都拿不到**（表现为「无任何输出」）。
+> 正确写法：
+> ```bash
+> cd <mpv根> && ./mpv.exe --vo=null --ao=null --no-idle --length=2 \
+>     --msg-level=all=info "av://lavfi:testsrc=d=3"
+> # 业务链路冒烟（不加 --length，脚本自己退出）
+> ./mpv.exe --vo=null --ao=null --msg-level=all=info \
+>     --script=portable_config/tools/biz-smoke.lua "av://lavfi:testsrc=d=3"
+> ```

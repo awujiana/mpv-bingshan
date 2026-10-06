@@ -13,6 +13,13 @@
   · 4 类缺陷全部被报出（A 1 条、B 3 条、C 1 条 INFO）
   · 3 个正确写法**一条都不报**（这是防误报的反向断言）
 
+2026-10-06 追加 Rule E（闭包捕获全局）的双向用例：
+  · E-1/E-2 两类真缺陷必须报出（回调闭包、普通闭包）
+  · E-3~E-7 五类**曾经的真实误报**必须静默：字符串同名文本、更早的同名
+    local 绑定、纯字段位置（.title / 表字段）、for 循环变量、函数参数。
+  E 的行号不再硬编码，改用源码里的 `--E:EXPECT` / `--E:SILENT` 行内标记反查 ——
+  硬编码行号一改金丝雀就要手工重数，数错之后自检会「静静地」测错东西。
+
 用法：python tools/lua-audit-nilguards-selftest.py
 退出码：0 = 自检通过，1 = 审计工具行为不符合预期（规则已失效或误报）
 """
@@ -37,6 +44,67 @@ local c = mp.command_native({'expand-path', '~~/cache'}):gsub('a','b')
 deps.notify.info(string.format("已更新: %s = %s", tostring(k), tostring(v)))
 deps.notify.info("纯文本提示，第二参是 tag", "mytag")
 mp.command_native({'expand-text', tpl}):gsub('a','b')
+
+-- ===== Rule E 用例（闭包捕获全局：声明晚于引用）=====
+-- E-1 真缺陷：回调闭包引用「晚声明」的局部量 —— 必须报出（报在声明行）
+local async_h = mp.command_native_async({"true"}, function()
+    if registered_token then registered_token() end
+end)
+local registered_token = nil --E:EXPECT
+-- E-2 真缺陷：普通闭包里的同一模式 —— 必须报出
+local function lazy_ref()
+    return pending_flag
+end
+local pending_flag = nil --E:EXPECT
+-- E-3 字符串里的同名文本不是引用 —— 静默
+local s1 = "servers"
+local servers = nil --E:SILENT
+-- E-4 同行/更早处已有 local 绑定 —— 静默
+local function shadowed()
+    local label
+    return label
+end
+local label = nil --E:SILENT
+-- E-5 只出现在字段位置（.title / 表字段 title=1）—— 静默
+local function field_only()
+    local cfg = {}
+    cfg.title = "x"
+    local t2 = { title = 1 }
+    return cfg, t2
+end
+local title = nil --E:SILENT
+-- E-6 for 循环变量 —— 静默
+local function loop_case()
+    for category in string.gmatch(o.skip, " *([^;]*) *") do
+        if categories[category:lower()] then return true end
+    end
+end
+local category = nil --E:SILENT
+-- E-7 函数参数 —— 静默
+local function param_case(widget)
+    if widget then return widget:lower() end
+end
+local widget = nil --E:SILENT
+-- E-8 `local function` 后声明 —— 必须报出（2026-10-06 补：我在
+--     apis/bangumi_user.lua 把 `local function do_request` 写在调用者之后，
+--     只认 `local X = nil` 的初版判据漏掉了这一类）
+local function uses_late_fn()
+    return late_helper()
+end
+local function late_helper() --E:EXPECT
+    return 1
+end
+-- E-9 块注释 --[[ ]] 里的同名文本不是引用 —— 静默
+--     注意：这里的名字只出现在**块注释内部**，别处没有任何引用。
+--     若审计器把块注释当代码，就会在下面的声明行上误报一条。
+--     （报告永远落在声明行，所以必须用独立名字才能形成有效断言）
+--[[
+   only_in_block_comment()
+   sha256()
+]]
+local function only_in_block_comment() --E:SILENT
+    return 1
+end
 '''
 
 # (期望级别, 期望规则前缀, 期望命中次数)
@@ -44,9 +112,23 @@ EXPECT_HITS = [
     ('P0', 'A/', 1),
     ('P0', 'B/', 3),
     ('INFO', 'C/', 1),
+    ('P1', 'E/', 3),
 ]
 # 这些行号（1-based，含 CANARY 开头的空行）必须**不出现**在任何告警里
 EXPECT_SILENT = [8, 9, 10]
+
+
+def _marker_lines(canary, marker):
+    """按 `--E:EXPECT` / `--E:SILENT` 行内标记反查行号（1-based）。
+
+    为什么用标记而不是硬编码行号：初版把行号写死，一改金丝雀就得手工重数，
+    极易数错、且数错之后自检会「静静地」测错东西 —— 这正是本文件要防的那类问题。
+    """
+    out = []
+    for idx, line in enumerate(canary.split('\n'), start=1):
+        if marker in line:
+            out.append(idx)
+    return out
 
 
 def main():
@@ -90,6 +172,26 @@ def main():
         if hit:
             ok = False
         print("  %s 正确写法（第 %d 行）保持静默" % (mark, ln))
+
+    # 断言 3：Rule E —— 「该报的报、该静的静」逐行核对
+    e_expect = _marker_lines(CANARY, '--E:EXPECT')
+    e_silent = _marker_lines(CANARY, '--E:SILENT')
+    if len(e_expect) < 2 or len(e_silent) < 4:
+        print("  ✗ 金丝雀里 Rule E 标记太少（EXPECT %d / SILENT %d）—— 标记丢了？"
+              % (len(e_expect), len(e_silent)))
+        ok = False
+    for ln in e_expect:
+        hit = bool(re.search(r':%d\s*$' % ln, out, re.M))
+        mark = '✓' if hit else '✗'
+        if not hit:
+            ok = False
+        print("  %s E 真缺陷（第 %d 行）被报出" % (mark, ln))
+    for ln in e_silent:
+        hit = bool(re.search(r':%d\s*$' % ln, out, re.M))
+        mark = '✗' if hit else '✓'
+        if hit:
+            ok = False
+        print("  %s E 正确写法（第 %d 行）保持静默" % (mark, ln))
 
     print()
     if ok:

@@ -1,6 +1,6 @@
 -- tools/guess-title-test.lua —— guess 模块的标题/集数解析回归测试
 --
--- 用法（在 mpv 根目录）：
+-- 用法（任意 cwd 均可 —— 路径基准由脚本自身位置推导）：
 --   ./luajit.exe portable_config/tools/guess-title-test.lua
 --   （纯 luajit 运行，stub 掉 mp API，不需要真机）
 --
@@ -31,8 +31,13 @@ package.preload["modules.utils.module_loader"] = function()
 end
 
 -- 让 require "modules.xxx" 能解析
-package.path = "portable_config/scripts/uosc_staff_credits/?.lua;"
-    .. "portable_config/scripts/uosc_staff_credits/?/init.lua;" .. package.path
+-- ---- 路径基准：从脚本自身位置反推，使本测试与 cwd 无关 ----
+-- 脚本位于 <mpv根>/portable_config/tools/，故上溯一级即 portable_config。
+local _src = debug.getinfo(1, "S").source or "@."
+local _tools_dir = _src:match("^@(.*)[/\\][^/\\]*$") or "."
+local _pc = _tools_dir:match("^(.*)[/\\][^/\\]*$") or "."
+package.path = _pc .. "/scripts/uosc_staff_credits/?.lua;"
+    .. _pc .. "/scripts/uosc_staff_credits/?/init.lua;" .. package.path
 
 local guess = require("modules.guess")
 

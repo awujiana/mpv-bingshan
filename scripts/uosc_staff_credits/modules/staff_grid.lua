@@ -103,6 +103,18 @@ local function compute_layout(osd_w, osd_h, items_count)
 end
 
 -- ====== 翻页 ======
+-- ⚠️ 2026-10-06 修复：render 的**前向声明**必须放在 page_up/page_down 之前。
+--    Lua 的局部量作用域从声明语句之后才开始，原来 `local function render()`
+--    写在第 157 行、而 page_up/page_down 在第 106/118 行，于是它们体内的
+--    `render()` 编译成了**全局读取** → 运行时 attempt to call global 'render'
+--    (a nil value)。触发条件：职员表条目多到能翻页时按 LEFT/RIGHT 或点翻页箭头。
+--    实测证据（tools/ 下的探针）：
+--      page_down → staff_grid.lua:130: attempt to call global 'render' (a nil value)
+--      page_up   → staff_grid.lua:114: attempt to call global 'render' (a nil value)
+--    debug.getupvalue 亦证实 page_up/page_down 的上值里**没有** render。
+--    修法即标准前向声明：先 `local render`，稍后改成 `render = function() ... end`。
+local render
+
 local function page_up()
     if not state.visible then return end
     local layout = state.layout
@@ -154,7 +166,10 @@ local function on_mouse_click()
 end
 
 -- ====== 渲染 ======
-local function render()
+-- 注意：这里**不能**写成 `local function render()`，否则会新建一个从本行才
+-- 生效的局部量，前面 page_up/page_down 仍然读全局。必须赋值给上面 `local render`
+-- 声明出来的那个局部量。
+render = function()
     if not state.visible then return end
     if not state.overlay then return end
     local ass_lib = deps.ass_lib
