@@ -61,7 +61,7 @@ end
 
 ## 2. script-opts 配置项
 
-共 24 项配置，按功能分组说明。所有配置项均可在 `script-opts/uosc_staff_credits.conf` 中覆盖默认值。
+共 29 项配置，按功能分组说明。所有配置项均可在 `script-opts/uosc_staff_credits.conf` 中覆盖默认值。
 
 > **类型说明**：boolean 类型接受 `yes/no/true/false/1/0`；number 类型接受正整数；string 类型为任意字符串。
 
@@ -71,6 +71,7 @@ end
 |------|------|--------|--------|------|------|
 | `api_base_url` | string | `https://api.bangumi.one` | 任意 HTTPS URL | 单服务器模式下的 Bangumi API 地址。留空则使用 `api_server`。官方 API 为 `https://api.bgm.tv`（要求 User-Agent 含联系方式，限流 1 次/秒、5000 次/天） | `api_base_url=https://api.bangumi.one` |
 | `api_server` | string | `""`（空） | 逗号分隔的多服务器列表，每项可用 `\|` 或 `#` 分隔备注 | 多服务器并发搜索（逗号分隔），首个有效结果即取消其余。包含官方 API 时自动降并发为 1 以避免限流。**注意**：此项仅在首次启动时导入到 `~~/staff-credits-servers.json`，之后以菜单中配置的优先级和启用状态为准 | `api_server=https://api.bgm.tv\|官方,https://api.bangumi.one\|镜像` |
+| `bangumi_token` | string | `""`（空） | Bangumi 个人访问令牌 | 用于读写**你自己的**收藏与观看进度（读收藏状态、改收藏、标记单集看过）。注意：**读自己的收藏也要 token** —— `GET /v0/users/-/collections/{id}` 是用户端点。公开数据（搜索、条目、剧集列表）不需要 token。留空时相关功能整体关闭（优雅降级，不会发起任何带 token 的请求）。获取地址：<https://next.bgm.tv/demo/access-token>。**安全提示**：该 token 等同于账号权限，请勿提交到 Git | `bangumi_token=xxxxxxxxxxxxxxxx` |
 
 ### 2.2 外部搜索源配置
 
@@ -150,7 +151,30 @@ end
 | `history_path` | string | `~~/staff-credits-history.json` | 任意文件路径（支持 `~~` 展开） | 搜索历史缓存文件路径，`~~` 会被展开为 mpv 配置目录 | `history_path=~~/staff-credits-history.json` |
 | `mpv_path` | string | `""`（空） | mpv 可执行文件绝对路径 | mpv 可执行文件路径，用于图片格式转换。留空则自动检测。**安全提示**：默认留空以避免硬编码绝对路径导致跨机器不可用 | `mpv_path=` |
 
-### 2.11 硬编码常量
+### 2.11 观看进度同步配置
+
+把「看到哪一集」同步到 Bangumi 收藏。**全部 4 项都依赖 `bangumi_token` 非空**；
+token 为空时这 4 项形同不存在（一个请求都不会发）。
+
+| 名称 | 类型 | 默认值 | 可选值 | 说明 | 示例 |
+|------|------|--------|--------|------|------|
+| `enable_progress_sync` | boolean | `true` | `yes` / `no` | 总开关。设 `no` 时不发起任何带 token 的请求（`progress_sync_mode` 也会被忽略） | `enable_progress_sync=yes` |
+| `progress_sync_mode` | string | `off` | `off` / `notify` / `auto` | 行为档位。`off`=打开视频**零网络请求**；`notify`=读一次当前进度并在 OSD 提示；`auto`=播放达阈值后**自动标记本集看过** | `progress_sync_mode=notify` |
+| `progress_sync_threshold` | number | `80` | 1-100 | 仅 `auto` 档生效。播放进度百分比达到该值才自动标记 | `progress_sync_threshold=80` |
+| `collection_type_on_mark` | integer | `3` | `1` / `2` / `3` / `4` / `5` | 条目**尚未收藏**时写入的收藏类型。已在收藏中的条目不会被改类型 | `collection_type_on_mark=3` |
+
+> ⚠️ **`enable_progress_sync=yes` 不等于「会发请求」**：默认 `progress_sync_mode=off`，
+> 两者叠加的结果是**打开视频时零请求**。要真正启用需同时把 mode 设为
+> `notify` 或 `auto`。这是刻意设计——避免升级后凭空多出网络活动。
+>
+> ⚠️ **`collection_type_on_mark` 用 Bangumi 新 API 取值，与很多旧教程相反**：
+> `1`=想看 `2`=看过 **`3`=在看** `4`=搁置 `5`=抛弃。
+> 也就是说「看过」是 `2`、默认的「在看」是 `3`。
+>
+> ⚠️ **写操作会返回 `204 No Content`（无响应体）**。这是正常的成功响应，
+> 不是失败——实现里已按此处理（见 `apis/bangumi_user.lua`）。
+
+### 2.12 硬编码常量
 
 以下常量定义在 `modules/defaults.lua` 顶部，**无法通过 script-opts 修改**，仅能通过修改源代码调整：
 
@@ -379,22 +403,15 @@ c script-message-to uosc_staff_credits staff-credits-set-config enable_data_cach
 
 **运行时可调项共 6 个**：`data_cache_days`、`image_cache_days`、`silent_preload_depth`、`pagination_position`、`enable_data_cache`、`debug`。
 
-### Bangumi 观看进度相关的 5 项（2026-10-06 新增）
+### 关于 Bangumi 观看进度的 5 项（2026-10-06 新增）
 
-| 名称 | 说明 |
-|------|------|
-| `bangumi_token` | Bangumi access token。留空则相关功能整体关闭（优雅降级）。获取：<https://next.bgm.tv/demo/access-token> |
-| `enable_progress_sync` | 总开关。`no` 时不发起任何带 token 的请求 |
-| `progress_sync_mode` | `off`（默认，打开视频零网络请求）/ `notify`（读一次进度并提示）/ `auto`（达阈值后自动标记本集看过） |
-| `progress_sync_threshold` | `auto` 档的触发阈值（播放进度百分比 1-100）。默认 80 |
-| `collection_type_on_mark` | 条目**尚未收藏**时写入的收藏类型。默认 `3`=在看 |
+表中 `bangumi_token` 见 **§2.1**，`enable_progress_sync` / `progress_sync_mode` /
+`progress_sync_threshold` / `collection_type_on_mark` 见 **§2.11**（含三条易错点警告）。
+此处不再重复，以免两处内容走偏。
 
-> ⚠️ `collection_type_on_mark` 用的是 Bangumi **新 API** 取值，与很多旧教程相反：
-> `1`=想看 `2`=看过 **`3`=在看** `4`=搁置 `5`=抛弃（2 是「看过」、3 是「在看」）。
->
 > ⚠️ 表中 `danmaku_api_server` 列的是**代码默认值**（官方源）。
-> 随包附带的 `script-opts/uosc_staff_credits.conf` 把它指向了自建镜像，
-> 以实际配置文件为准。
+> 随包附带的 `script-opts/uosc_staff_credits.conf` 把它指向了自建镜像
+> （`https://dm.wodenas.xin/xiatianembydmww`），**以实际配置文件为准**。
 
 ---
 
