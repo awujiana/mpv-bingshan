@@ -287,14 +287,43 @@ function M.show_main_menu()
             end
         end
     end
-    -- 7. 分隔项
+    -- 7. 在浏览器打开当前条目（2026-10-07 审计补的入口）
+    --    起因：staff-credits-open-browser 这个路由自首次接入（6c538bf）起就
+    --    **没有任何发送方** —— dispatcher 里的 handle_open_browser() 写得很完整
+    --    （scheme 校验、跨平台、防命令注入），但菜单里没有对应条目，
+    --    于是这个能力用户根本点不到，成了「写了但从未接线」的死代码。
+    --
+    --    条目信息取自 state.get_last_subject(当前路径)：只有该路径已经成功
+    --    解析过条目时才出现，与上面第 6 项（观看进度）同样的约定 ——
+    --    不可用时直接不显示，不在菜单里留一个点不动的死项。
+    do
+        local cur_path = mp.get_property("path")
+        local info = nil
+        if cur_path and deps.state and type(deps.state.get_last_subject) == "function" then
+            local ok, got = pcall(deps.state.get_last_subject, cur_path)
+            if ok then info = got end
+        end
+        if type(info) == "table" and info.id then
+            local label = info.name_cn
+            if not label or label == "" then label = info.name end
+            table.insert(items, {
+                title = "在浏览器打开",
+                icon = "open_in_new",
+                hint = ((label and label ~= "") and (label .. " · ") or "") .. "bgm.tv",
+                value = "script-message-to " .. script_name
+                    .. " staff-credits-open-browser https://bgm.tv/subject/" .. tostring(info.id),
+            })
+        end
+    end
+
+    -- 8. 分隔项
     table.insert(items, {
         title = "─── 设置 ───",
         italic = true,
         unselectable = true,
         keep_open = true,
     })
-    -- 8. 网站优先级
+    -- 9. 网站优先级
     table.insert(items, {
         title = "网站优先级",
         icon = "swap_vert",
@@ -302,7 +331,7 @@ function M.show_main_menu()
         value = "script-message-to " .. script_name .. " staff-credits-servers",
         keep_open = false,
     })
-    -- 9. 搜索设置
+    -- 10. 搜索设置
     table.insert(items, {
         title = "搜索设置",
         icon = "settings",
@@ -310,7 +339,7 @@ function M.show_main_menu()
         value = "script-message-to " .. script_name .. " staff-credits-settings",
         keep_open = false,
     })
-    -- 10. 清除当前视频缓存
+    -- 11. 清除当前视频缓存
     table.insert(items, {
         title = "清除当前视频缓存",
         icon = "delete",
@@ -318,7 +347,7 @@ function M.show_main_menu()
         value = "script-message-to " .. script_name .. " staff-credits-clear-cache",
         keep_open = false,
     })
-    -- 11. 清除所有缓存
+    -- 12. 清除所有缓存
     table.insert(items, {
         title = "清除所有缓存",
         icon = "delete_sweep",
