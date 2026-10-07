@@ -72,6 +72,38 @@ function M.run()
         return false
     end
 
+    -- ====== 1.5 合并持久化的运行时配置（必须在这里，且早于任何模块 init）======
+    -- 优先级：runtime_config > opts(script-opts) > defaults
+    --
+    -- ⚠️ 为什么非要在这一步、而不能等 runtime_config.init（步骤 18.7）：
+    --   module_loader.make_init 会把 opts **浅拷贝**进每个模块自己的一张表
+    --   （shallow_merge）。模块一旦 init 过，它的副本就固定了 —— 之后再改这张
+    --   共享 opts 也传导不到它。所以持久化值必须在**第一次 init 之前**并进来。
+    --
+    --   历史缺陷（2026-10-07 修）：此前只在 runtime_config.load() 里合并它自己的
+    --   私有副本，而 data_cache / cards / cover_intro 读的都是各自的副本 ——
+    --   于是「改了设置、菜单显示新值、重启却回退」，与文档承诺相反。
+    --   详见 docs/REVIEW_AND_MERGE.md §11.11。
+    --
+    -- 本步同时也让 runtime_config 的 runtime_data 就位（供菜单显示当前值）。
+    do
+        local ok_rc, rc = pcall(require, "modules.runtime_config")
+        if ok_rc and rc and type(rc.apply_persisted) == "function" then
+            local applied = rc.apply_persisted(opts)
+            local n = 0
+            if type(applied) == "table" then
+                for _ in pairs(applied) do n = n + 1 end
+            end
+            if n > 0 then
+                msg.verbose("[bootstrap] 已合并运行时配置项 " .. n .. " 个")
+            end
+        else
+            -- 非致命：持久化配置读不到时照常以 script-opts/defaults 启动
+            msg.warn("[bootstrap] runtime_config 不可用，跳过持久化配置合并: "
+                .. tostring(rc))
+        end
+    end
+
     -- ====== 2. 获取 script_name ======
     local script_name = mp.get_script_name() or "uosc_staff_credits"
 

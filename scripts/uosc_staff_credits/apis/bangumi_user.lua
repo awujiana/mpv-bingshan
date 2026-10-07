@@ -18,7 +18,14 @@
 -- ============================================================================
 --   1. 打开 https://next.bgm.tv/demo/access-token
 --   2. 登录后生成，复制 access token
---   3. 填到 script-opts/uosc_staff_credits.conf 的 bangumi_token=
+--   3. 填到 **staff-credits-runtime-config.json**（mpv 配置目录下）：
+--          { "bangumi_token": "你的40位token" }
+--
+--   ⚠️ 为什么不填 script-opts/uosc_staff_credits.conf：
+--      那个文件受 Git 跟踪，填进去会把令牌明文写进版本历史。
+--      runtime-config.json 已被 .gitignore 忽略，且优先级更高
+--      （runtime_config > opts > defaults），启动时经 runtime_config.load()
+--      合并进 opts —— 本模块读的就是 opts.bangumi_token，故完全等效。
 --
 -- 安全：token 等同于账号权限。日志里**绝不**打印 token 本身。
 --       本模块所有日志只输出「是否已配置」，不输出值。
