@@ -362,6 +362,21 @@ key script-message clear-source
 </details>
 
 <details>
+<summary>显示当前弹幕数量</summary>
+
+> #### 显示当前弹幕数量（可选）
+
+在视频播放时，把当前已加载的弹幕条数以 OSD 消息形式显示出来；若已匹配到番剧，会一并显示匹配到的番剧名与集数。若当前没有弹幕数据，会提示「comments无数据」而不是报错。
+
+想要通过快捷键使用此功能，请添加类似下面的配置到 `input.conf`中。对应的脚本消息为 `show_danmaku_count`。
+
+```
+key script-message show_danmaku_count
+```
+
+</details>
+
+<details>
 <summary>检查脚本更新</summary>
 
 > #### 检查脚本更新（可选）
