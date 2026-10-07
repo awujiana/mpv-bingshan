@@ -1234,3 +1234,154 @@ package.path = _pc .. "/scripts/uosc_staff_credits/?.lua;"
 > 另外 `CONFIGURATION.md` 里两处配置项计数（「24 项」「29 项」）本来就互相矛盾且都已过期。
 > 现按 `modules/defaults.lua` 的实际项数统一为 **27**（`load_options` 遍历 `M.defaults`
 > 全部键调 `mp.get_opt`，所以每一项都可被 script-opts 覆盖）。
+
+---
+
+## 13. 全流程审计（2026-10-07 五轮）
+
+本轮任务原文是「**检查所有的任务流程**」——不是改功能，是把两个自研脚本的
+全部链路扫一遍，看有没有「语法/审计全过但流程是断的」地方。
+
+### 13.1 审计方法（四条判据，都是被前几轮教出来的）
+
+| 判据 | 为什么不能省 |
+|---|---|
+| 全量门禁 + 真机冒烟打底 | 绿了不代表对，但红了肯定不对，先排除低阶问题 |
+| **跨模块消息链路闭环** | 已有三道「路由」门禁只查 `uosc.conf` 的 `controls=`（工具栏按钮）与菜单项，**不查脚本内部 `script-message`** |
+| **模块可达性** | 抓「写了但没人加载」的死模块 |
+| **判据必须匹配完整调用形态** | 只查名字必被动态拼串骗过（见 13.4 的三次误报） |
+
+### 13.2 审计结果总览
+
+| 链路 | 结论 |
+|---|---|
+| 语法 / 按钮 / 工具栏路由 / 菜单路由 / nil 守卫审计 | 全绿（0 未注册、0 缺陷） |
+| 真机业务冒烟（staff_credits 4 条路由） | 5/5 派发，0 Lua error |
+| 跨模块消息链路（52 个注册项 × 全仓库引用方） | **P0 = 0**（无死信）；5 条「仅注册」经核实 3 条是合法外部入口 |
+| 模块可达性（51 + 23 个模块） | **0 死模块**（唯一「未被引用」的是 `main.lua`，由 mpv 直接加载） |
+| 弹幕自动加载入口（`init` vs `file-loaded`） | 无双份加载：`options.auto_load` 为真时 `return` 早退，`init()` 走不到 |
+| `FALLBACK_TRIGGER` 缺陷闭合性 | 三处一致（声明 `main.lua:35` / 置位 `:789` / 重置 `render.lua:260`） |
+| 搜索历史读写 | 正确（`save_*` 的每个调用点都在 `load_*` 之后，`search_history_records` 不会是 nil） |
+| 服务器迁移 v1→v5 | 正确（含迁移后立即回写；空列表时 `try_bangumi` 有 nil 守卫，优雅降级而非崩溃） |
+
+### 13.3 查实的问题与处置
+
+**P1 — `uosc_danmaku` 零测试（最严重）**
+
+19 个源文件（11 模块 + 6 站点解析 + 2 API）**此前没有任何自动化测试**，
+而最近一次提交（`972d27f`）恰好把它的排版引擎**整体重写**了。当时的验证是
+一次性的、**没有留存**，于是重写后的引擎处于零回归保护状态。
+
+⇒ 新增 `tools/danmaku-layout-test.lua`（**34 条断言全过**）。判据设计见 13.5。
+
+**P2 — `staff-credits-open-browser` 从未接线**
+
+`handle_open_browser()` 自 `6c538bf` 首次接入起就**没有任何发送方**：
+函数写得很完整（URL scheme 白名单校验、跨平台打开、`mp.commandv` 传 argv 防注入），
+但菜单里没有对应条目 —— 用户根本点不到，是典型的「写了但从未接线」。
+
+⇒ 按用户决定**接入主菜单**（第 7 项「在浏览器打开」）。取值链：
+`state.get_last_subject(当前 path)` → `https://bgm.tv/subject/{id}`。
+沿用第 6 项（观看进度）的约定：**拿不到条目信息就整个不显示**，不留点不动的死项。
+
+**P2 — `show_danmaku_count` 无文档**
+
+与 `clear-source` / `immediately_save_danmaku` 同类（用户自绑 `input.conf` 的入口），
+但 README 里漏了它。
+
+⇒ 补 README 一节。
+
+**P3 — 主菜单编号重复**
+
+`-- 9.` 出现两次（网站优先级 / 搜索设置）。是 `883a2bd` 移除番库搜索时
+重编号漏改的。⇒ 已重排为 9~12。
+
+**记录在案、本轮不改 — `dispatch_fallback` 的「用重复搜索换重试」**
+
+`try_bangumi(server_url, on_fail)` 内部调 `search_subject_enhanced`，而后者
+**不看传入的 `server_url`**，自己取 `get_active_bangumi_servers()` 并行搜全部源。
+外层 `dispatch_fallback` 又按 `active_sources` 逐个调 `try_bangumi`：
+
+- 移除 fankuhub 后，所有源 `type == "bangumi"`，两个取用函数返回同一组 URL；
+- 于是「搜索全部失败」时会把**同一轮并行搜索重跑 N 遍**（默认 3 源 ⇒ 9 次请求而非 3 次，
+  失败路径最坏 3 倍等待）。
+
+但它**不是纯冗余**：`on_fail` 在「取角色失败」时也会触发，那时换 `server_url`
+重取角色是条真实的重试路径。⇒ 经用户确认**暂不改，仅记录**（改法是把首次成功的
+`subject` 缓存下来供后续迭代复用，属重构）。
+
+### 13.4 三次「判据错了，不是代码错了」——本轮最重要的教训
+
+这一轮我三次报出「问题」，三次都是**我的审计工具/探针有 bug**：
+
+| # | 假象 | 根因 |
+|---|---|---|
+| 1 | `input_open` 每次调用都注册一个 `input-event` 处理器 ⇒ 疑为回调队列错乱 | **mpv 对同名 `script-message` 是「后注册覆盖前者」**。真机实证：注册 2 个处理器、发 1 次消息，只触发 1 次且是后注册的那个。故重复注册无害 |
+| 2 | 排版测试 §3 三档密度**整齐地 100% 失败**（111/111、876/876、4836/4836） | 我的重叠判据把半宽写成 `(x1-x2)/2`，而 `\move` 的锚点是**文本中心** ⇒ `x1-x2 = res_x + 文本宽`，半宽虚高 960px ⇒ 阈值虚高近 2000px。**「整齐的失败率」本身就是判据错了的信号** |
+| 3 | 真机探针报「菜单项没有 `hint`」 | 两次探针假象：① 连开两次菜单时第二次被状态机挡住**没发出**，`captured[#captured]` 静默复用上一轮载荷 ⇒ 假阴性；② 用 `%b{}` 切 JSON 匹配到了**外层对象**，且 `i-60` 的窗口切在了 `value` 字符串中间 |
+
+⇒ 沉淀三条纪律：
+- **探针的索引必须校验「这次真的捕获到了」**（比较 `#captured` 前后），
+  否则一次 no-op 调用会静默复用上次的载荷，把「没触发」伪装成「触发了但内容不对」。
+- **打印 JSON 不要用固定字节窗口**：LuaJIT 默认随机化字符串哈希 ⇒
+  `format_json` 的键序**每个进程都不同**，窗口必然时对时错。要么整段打印，要么用括号配对。
+- **静态判据的假阳性会教人忽略告警**（`MEMORY.md` 已有此条）。本轮
+  「模块可达性」审计 v1 只认 `require`，把 34 个活模块全报成死模块（假阳性率 100%）——
+  因为 `uosc_staff_credits` 的加载入口是 `bootstrap` 里的 `load_mod("modules.xxx")`。
+
+### 13.5 新增测试的判据设计（`tools/danmaku-layout-test.lua`）
+
+核心选择：**不复刻算法，从真正被渲染的产物反推**。
+
+```
+合成弹幕 → convert_danmaku_to_ass_events() → ASS 事件
+                                              ↓
+        用事件的 \move / \pos 坐标独立复算「两条弹幕在时间轴上是否真的重叠」
+```
+
+复刻算法 = 在测「我对它的理解」（算法改错时判据跟着一起错）；
+查产物 = 在测「它实际画了什么」。
+
+§3 的判据还先跑一条**坐标系自检**：若「锚点是文本中心」成立，则
+`(x1 - x2) - 文本宽` 应恒等于 `res_x`（实测恒为 1920）。
+**先证明尺子是对的，再量东西。**
+
+实测结果（滚动弹幕，同 y 带且时间相交的对数 / 实际重叠数）：
+
+| 档位 | 输入 | 产出事件 | 滚动事件 | 同带对 | 重叠 |
+|---|---|---|---|---|---|
+| 稀疏 | 200 | 200 | 119 | 111 | **0** |
+| 中等 | 800 | 800 | 483 | 876 | **0** |
+| 密集 | 3000 | 3000 | 1871 | 4836 | **0** |
+
+**变异验证（证明测试有牙）**：把 `find_y_from_top` 的碰撞判定改成恒假
+（`if false and y_intersects(...)`），重叠立刻爆到 **103 / 1401 / 21702**，
+§4 固定弹幕也一并红。还原后回到 0。
+
+> ⚠️ 记一笔**无效变异**：最初想把 `find_y_from_top` 改成「恒 `return 1`」，
+> 但 Lua 要求 `return` 必须是块的最后一条语句 ⇒ 后面还跟着 `local y = 1` 就是**语法错误**，
+> 测试报的是「模块加载失败」而不是「碰撞违例」——**信号错了，等于没测**。
+
+### 13.6 本轮门禁清单（16 项，全部通过）
+
+```bash
+# 在 portable_config/ 下
+../luajit.exe tools/lua-syntax-check.lua             #  1. 语法：186/186
+../luajit.exe tools/osd-button-selftest.lua          #  2. 自测：16/16
+../luajit.exe tools/osd-button-drift-regression.lua  #  3. 漂移回归
+python tools/uosc-verify-buttons.py                  #  4. 按钮：未注册 0
+python tools/uosc-verify-routes.py                   #  5. 工具栏路由：未注册 0
+python tools/uosc-verify-menu-routes.py              #  6. 菜单路由：本项目未注册 0
+python tools/lua-audit-nilguards.py                  #  7. 审计：P0/P1/INFO = 0
+python tools/lua-audit-nilguards-selftest.py         #  8. 金丝雀：规则有效
+
+../luajit.exe tools/bangumi-user-test.lua            #  9.
+../luajit.exe tools/progress-sync-test.lua           # 10.
+../luajit.exe tools/staff-grid-paging-test.lua       # 11.
+../luajit.exe tools/runtime-config-test.lua          # 12. 42/42
+../luajit.exe tools/guess-title-test.lua             # 13. 13/13
+../luajit.exe tools/title-normalize-test.lua         # 14. 58/58
+../luajit.exe tools/danmaku-layout-test.lua          # 15. 34/34  ★本轮新增
+```
+
+真机：`biz-smoke`（5 个业务路由派发，0 Lua error）+ 常规启动冒烟（0 错误）。
