@@ -25,7 +25,6 @@ local deps, init = require("modules.utils.module_loader").make_feature_init(
         get_danmaku_info = "function",
         get_current_title = "function",
         opts = "table",
-        fankuhub = "table",
         anilist = "table",
         mal = "table",
         baike = "table",
@@ -86,7 +85,7 @@ end
 -- subject: 搜索得到的条目（含 id/url）
 -- title: 展示标题
 -- entry_path: 进入时路径
--- v1.6: 支持多数据源（bangumi/fankuhub/anilist/mal/baike）的详情接口适配
+-- v1.6: 支持多数据源（bangumi/anilist/mal/baike）的详情接口适配
 local function fetch_detail_and_show(subject, title, entry_path)
     if deps.state.search_state.current_path ~= entry_path then return end
     if not subject or not subject.id then
@@ -96,15 +95,11 @@ local function fetch_detail_and_show(subject, title, entry_path)
     end
 
     -- 根据 subject 来源选择数据接口
-    -- v1.6: 支持多数据源（fankuhub/anilist/mal/baike）的兼容接口
+    -- v1.6: 支持多数据源（anilist/mal/baike）的兼容接口
     local source = subject._source or "bangumi"
     local fetch_fn, fetch_arg
 
-    if source == "fankuhub" and deps.fankuhub
-       and type(deps.fankuhub.get_subject_detail_compatible) == "function" then
-        fetch_fn = deps.fankuhub.get_subject_detail_compatible
-        fetch_arg = subject.id
-    elseif source == "anilist" and deps.anilist
+    if source == "anilist" and deps.anilist
        and type(deps.anilist.get_subject_detail_compatible) == "function" then
         fetch_fn = deps.anilist.get_subject_detail_compatible
         fetch_arg = subject.id
@@ -140,8 +135,7 @@ local function fetch_detail_and_show(subject, title, entry_path)
         -- 加载来源提示：根据 source 显示数据来源
         if deps.notify and type(deps.notify.show_click_hint) == "function" then
             local source_label = "Bangumi"
-            if source == "fankuhub" then source_label = "番库"
-            elseif source == "anilist" then source_label = "AniList"
+            if source == "anilist" then source_label = "AniList"
             elseif source == "mal" then source_label = "MAL"
             elseif source == "baike" then source_label = "百度百科"
             end
@@ -183,7 +177,7 @@ end
 
 -- fetch: 封面简介入口
 -- v1.6: 使用统一接口 resolve_display_title 获取中文标题
---       （4 级优先级 + 中文转换，与 BGM/番库搜索预填逻辑一致）
+--       （4 级优先级 + 中文转换，与 BGM 搜索预填逻辑一致）
 function M.fetch()
     if deps.notify and deps.notify.set_tag then deps.notify.set_tag("封面简介") end
     if not deps.search_pipeline or not deps.cover_intro then

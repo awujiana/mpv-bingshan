@@ -1,6 +1,12 @@
 # uosc_staff_credits 项目设计文档
 
 > 版本: 1.9.2  ·  最后更新: 2026-08-02
+>
+> ⚠️ **本文档是 v1.9.2 的历史快照，正文未随代码更新。**
+> 文中描述的 `fankuhub` 聚合源已于 v2.0 移除（同时删除 `data_source` /
+> `fankuhub_api_base` 配置项、`staff-credits-fankuhub-search` 路由、
+> `apis/fankuhub.lua` / `features/fankuhub_search.lua`）。
+> 移除详情见 `REVIEW_AND_MERGE.md` §12；现行配置见 `CONFIGURATION.md`。
 
 ---
 

@@ -4,7 +4,7 @@
 -- 提供 warn / error / info / debug 五个方法
 -- debug 受 opts.debug 门控，支持 string.format 占位符
 -- v1.6: 支持动态 tag 前缀，通过 set_tag 设置当前 feature 标识，
---       OSD 显示 [tag] 符号 消息，便于区分来源（职员表/角色介绍/封面简介/BGM 搜索/番库搜索/制作评分）
+--       OSD 显示 [tag] 符号 消息，便于区分来源（职员表/角色介绍/封面简介/BGM 搜索/制作评分）
 
 local mp = require("mp")
 local msg = require("mp.msg")
@@ -25,7 +25,7 @@ function M.init(new_opts, new_deps)
 end
 
 -- set_tag: 设置当前 feature tag（用于 OSD 前缀 [tag]）
--- tag: string，如 "职员表" / "角色介绍" / "封面简介" / "BGM 搜索" / "番库搜索" / "制作评分"
+-- tag: string，如 "职员表" / "角色介绍" / "封面简介" / "BGM 搜索" / "制作评分"
 function M.set_tag(tag)
     if type(tag) == "string" and tag ~= "" then
         current_tag = tag
@@ -78,8 +78,8 @@ end
 
 -- show_click_hint: 点击功能时在 OSD 左上角显示提示
 -- 使用 mp.osd_message 显示，时长 2 秒
--- feature_name: 功能名称，如 "职员表" / "角色介绍" / "封面简介" / "BGM 搜索" / "番库搜索" / "制作评分"
--- detail: 可选，加载细节，如 "加载中..." / "从本地缓存加载" / "从内存缓存加载" / "从 Bangumi 加载" / "从番库加载"
+-- feature_name: 功能名称，如 "职员表" / "角色介绍" / "封面简介" / "BGM 搜索" / "制作评分"
+-- detail: 可选，加载细节，如 "加载中..." / "从本地缓存加载" / "从内存缓存加载" / "从 Bangumi 加载"
 --         传入 nil 时仅显示功能名称；传入字符串会以 "功能名 · detail" 形式展示
 function M.show_click_hint(feature_name, detail)
     local name = tostring(feature_name or "")

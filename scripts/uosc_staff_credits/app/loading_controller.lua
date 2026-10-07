@@ -408,7 +408,7 @@ local overlay_loader = nil  -- { overlay, update_timer, refresh_fn }
 
 -- ============ 核选项菜单关闭（v1.9.5）============
 -- nuclear_menu_dismiss: 尝试所有已知方法强制关闭 uosc 菜单
--- 原因：uosc 的 close-menu 是异步消息，在高速竞态下（fankuhub <500ms 返回）
+-- 原因：uosc 的 close-menu 是异步消息，在高速竞态下（数据源快速返回时）
 --       可能被忽略、重排、或因 keep_open item 而无效。5 个版本修复证明
 --       单一 close-menu 方向不可行，必须多重手段并行。
 function M.nuclear_menu_dismiss()

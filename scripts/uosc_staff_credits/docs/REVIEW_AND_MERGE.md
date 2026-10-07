@@ -1151,3 +1151,86 @@ package.path = _pc .. "/scripts/uosc_staff_credits/?.lua;"
 > 判据必须是 **`exit code` + 汇总行**（本项目统一打印
 > `结果：N/N 通过` 或 `通过 N，失败 0`）。
 > 批量跑测试时一律用 `exit=$?` 判定，别用肉眼看输出尾部。
+
+---
+
+## 12. 移除 `fankuhub` 聚合源（2026-10-07 四轮）
+
+### 12.1 起因与决定
+
+用户决定不再使用 `fankuhub`（`https://fankuhub.com`）。选项有「仅停用」与「彻底删除」，
+选定的是**彻底删除**：不留死代码。
+
+### 12.2 影响面比预估大得多
+
+一开始按 `grep` 的印象判断为「bootstrap / dispatcher / menu 几处引用」，
+实测是 **31 个文件**（含 `app/search_pipeline.lua` 51 处、`modules/cover_intro.lua` 20、
+`features/staff_credits.lua` 17、`features/production_score_flow.lua` 12）。
+
+> 教训：**动手前先数引用数**，别凭印象报影响面。
+
+### 12.3 删除清单
+
+| 类别 | 内容 |
+|------|------|
+| 整个文件（3） | `apis/fankuhub.lua`（447 行）、`features/fankuhub_search.lua`（326 行）、`docs/fankuhub_api.md`（759 行） |
+| 代码分支 | `search_pipeline` 的 `try_fankuhub` / 「fankuhub 优先快速路径」/ `resolve_chinese_title` 数据源 3；`staff_credits` 与 `production_score_flow` 的 persons 快速路径；`cover_intro` / `cards` / `name_resolver` / `character_cards` 的 fankuhub 专有字段分支 |
+| 配置项 | `data_source`（`auto` 与 `bangumi` 语义重合后已无意义）、`fankuhub_api_base` |
+| 菜单项 | 主菜单「番库搜索」及其后续编号（6→5 … 12→11） |
+| 路由 | `staff-credits-fankuhub-search`、`staff-credits-fankuhub-search-by-person` |
+| 字段兼容 | `nameCn` / `imageUrl` / `img` / `titleZh` / `titleJa` / `titleEn` / `titleRomaji` / `coverUrl` / `aggregateScore` / `airDate`（均已无生产者） |
+
+改名：`try_fankuhub_fallback` → **`try_multi_source_fallback`**
+（该函数早已是通用链，名字却停在「只有 fankuhub」的时代 —— 误导性命名）。
+现链为 **anilist → mal → baike**。
+
+### 12.4 老用户数据迁移（只删预设是不够的）
+
+`modules/servers.lua` 的 `SCHEMA_VERSION` 4 → **5**，新增 `migrate_v4_to_v5(list)`：
+按 `srv.type == "fankuhub"` 或 URL 含 `fankuhub%.com` 过滤掉该条目。
+
+> 为什么必须有迁移：`~~/staff-credits-servers.json` 是**用户本地文件**，
+> 老用户里面已经写进了 `{ "url": "https://fankuhub.com", "type": "fankuhub", ... }`。
+> 只把 `PRESET_SERVERS` 里的条目删掉，对老用户**完全无效** ——
+> 结果就是拿 fankuhub 的 URL 去请求 bangumi API，白白失败一次。
+
+### 12.5 顺带清掉的一处「会骗人的常量」
+
+`modules/defaults.lua` 里的 `M.SCHEMA_VERSION = 4` 全仓库无人引用，
+但版本号已升到 5，留着就是一处**看起来权威、实际说谎**的定义。
+已删除，并在原位注明真正的持有者是 `modules/servers.lua`。
+
+### 12.6 门禁实测
+
+| 门禁 | 结果 |
+|------|------|
+| `tools/lua-syntax-check.lua` | 186 文件 OK 186 / FAIL 0 |
+| `tools/lua-audit-nilguards.py` | P0 0 / P1 0 / INFO 0 |
+| `tools/uosc-verify-routes.py` | 未注册 0 |
+| `tools/uosc-verify-buttons.py` | 未注册 0 |
+| `tools/uosc-verify-menu-routes.py` | 本项目未注册 0 |
+| `tools/runtime-config-test.lua` | 42/42 |
+| `tools/bangumi-user-test.lua` | 79/79 |
+| `tools/progress-sync-test.lua` | 55/55 |
+| `tools/staff-grid-paging-test.lua` | 7/7 |
+| `tools/osd-button-selftest.lua` | 16/16 |
+| `tools/osd-button-drift-regression.lua` | 对比成立 |
+| `tools/guess-title-test.lua` | 13/13 |
+| `tools/title-normalize-test.lua` | 58/58 |
+| `tools/biz-smoke.lua`（真机） | 5 条业务路由全部派发，无 Lua error |
+
+> 一个真实的踩坑：删「persons 快速路径」时多留了一个 `end`，
+> `production_score_flow.lua` 语法直接挂。**语法检查先跑，别等测试** ——
+> 它 1 秒就能定位到行号。
+
+### 12.7 文档处理原则
+
+- **现行参考文档**（`CONFIGURATION.md`、`bangumi_mirror_api.md`、
+  `spec_enhance_cache_ui_components.md`）→ **改内容**，删掉已不存在的配置项与流程，
+  只在原位留一句「历史说明」解释为什么没了。
+- **版本化快照文档**（`DESIGN.md` / `PROJECT.md` / `UI.md`，均停在 v1.9.2）→
+  **不改正文**，只加头部提示。它们是历史记录，改写等于伪造历史。
+
+> 另外 `CONFIGURATION.md` 里两处配置项计数（「24 项」「29 项」）本来就互相矛盾且都已过期。
+> 现按 `modules/defaults.lua` 的实际项数统一为 **27**（`load_options` 遍历 `M.defaults`
+> 全部键调 `mp.get_opt`，所以每一项都可被 script-opts 覆盖）。

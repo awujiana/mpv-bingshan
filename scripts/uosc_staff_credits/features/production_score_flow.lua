@@ -21,7 +21,6 @@ local deps, init = require("modules.utils.module_loader").make_feature_init(
         loading_controller = "table",
         request_registry = "table",
         search_pipeline = "table",
-        fankuhub = "table",
         anilist = "table",
         mal = "table",
         baike = "table",
@@ -164,16 +163,12 @@ local function run_persons_phase(subject, title, entry_path, menu_type)
     deps.loading_controller.set_loading(true)
     deps.loading_controller.show_with_countdown("正在获取制作人员...", menu_type, display_title, false)
 
-    -- v1.6: 支持多数据源（fankuhub/anilist/mal/baike）的兼容接口
+    -- v1.6: 支持多数据源（anilist/mal/baike）的兼容接口
     -- subject._source 非 bangumi 时用对应数据源的 compatible 接口，避免 id 类型不匹配
     local source = subject._source or "bangumi"
     local fetch_fn, fetch_arg
 
-    if source == "fankuhub" and deps.fankuhub
-       and type(deps.fankuhub.get_subject_persons_compatible) == "function" then
-        fetch_fn = deps.fankuhub.get_subject_persons_compatible
-        fetch_arg = subject.id
-    elseif source == "anilist" and deps.anilist
+    if source == "anilist" and deps.anilist
        and type(deps.anilist.get_subject_persons_compatible) == "function" then
         fetch_fn = deps.anilist.get_subject_persons_compatible
         fetch_arg = subject.id
@@ -186,47 +181,11 @@ local function run_persons_phase(subject, title, entry_path, menu_type)
         fetch_fn = deps.baike.get_subject_persons_compatible
         fetch_arg = subject.id
     else
-        -- v1.9.1: bangumi 来源（默认）→ 优先尝试 fankuhub 快速路径
-        --       fankuhub.search() 一次请求返回角色+声优+图片，比 bangumi /persons 端点快 3-5s
-        --       fankuhub 不可用时回退到 bangumi API（使用 request_timeout=15s 超时）
-        local bangumi_fetch = function(id, cb)
+        -- bangumi 来源（默认）→ 直接走 bangumi /persons 端点
+        fetch_fn = function(id, cb)
             deps.api.get_subject_persons(id, server_url, cb)
         end
-
-        if deps.fankuhub and type(deps.fankuhub.search) == "function" then
-            fetch_fn = function(_arg, cb)
-                deps.fankuhub.search(display_title, function(fk_ok, fk_results, _fk_err)
-                    if fk_ok and fk_results and #fk_results > 0 then
-                        local best = fk_results[1]
-                        local raw_chars = best.characters or {}
-                        local persons = {}
-                        for _, c in ipairs(raw_chars) do
-                            -- v1.9.6: 修复图片字段映射：fankuhub 用 imageUrl 而非 images
-                            local person_images = c.images
-                            if not person_images and type(c.imageUrl) == "string" and c.imageUrl ~= "" then
-                                person_images = { medium = c.imageUrl }
-                            end
-                            table.insert(persons, {
-                                id = c.id,
-                                name = c.name or "",
-                                name_cn = c.name_cn or c.nameCn,
-                                relation = c.role or c.relation or "",
-                                images = person_images,
-                                type = 2,
-                                actors = c.actors,
-                            })
-                        end
-                        cb(true, persons, nil)
-                    else
-                        bangumi_fetch(subject.id, cb)
-                    end
-                end)
-            end
-            fetch_arg = nil
-        else
-            fetch_fn = bangumi_fetch
-            fetch_arg = subject.id
-        end
+        fetch_arg = subject.id
     end
 
     fetch_fn(fetch_arg, function(success, persons, err_info)
@@ -280,8 +239,7 @@ local function run_persons_phase(subject, title, entry_path, menu_type)
                     -- 加载来源提示：根据 source 显示数据来源
                     if deps.notify and type(deps.notify.show_click_hint) == "function" then
                         local source_label = "Bangumi"
-                        if source == "fankuhub" then source_label = "番库"
-                        elseif source == "anilist" then source_label = "AniList"
+                        if source == "anilist" then source_label = "AniList"
                         elseif source == "mal" then source_label = "MAL"
                         elseif source == "baike" then source_label = "百度百科"
                         end
@@ -321,7 +279,7 @@ function M.fetch()
         keep_loading_after_search = true,
         -- 缓存命中：直接进入 persons 阶段
         -- v1.6: 缓存无有效标题时通过 resolve_cached_title 统一兜底
-        --       （4 级优先级 + 中文转换，与 BGM/番库搜索预填逻辑一致）
+        --       （4 级优先级 + 中文转换，与 BGM 搜索预填逻辑一致）
         on_cached_hit = function(cached, entry_path)
             deps.search_pipeline.resolve_cached_title(cached, entry_path, function(title)
                 if deps.state.search_state.current_path ~= entry_path then return end

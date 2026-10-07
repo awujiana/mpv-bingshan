@@ -35,8 +35,8 @@ local PANEL_BASE_H = 720
 -- ====== 模块本地状态 ======
 local state = {
     visible = false,
-    detail = nil,         -- 条目详情数据（bangumi/fankuhub 格式）
-    source_name = "",     -- "bangumi" / "fankuhub" / "未知"
+    detail = nil,         -- 条目详情数据（bangumi/anilist/mal/baike 格式）
+    source_name = "",     -- "bangumi" / "anilist" / "mal" / "baike" / "未知"
     overlay = nil,        -- mp.create_osd_overlay('ass-events') 句柄
     -- v1.7: cover_overlay_id 改由 overlay_manager.alloc_id 动态分配
     cover_overlay_id = nil,       -- 当前使用的 overlay id（alloc_id 成功时为分配值，失败时降级为 62）
@@ -89,14 +89,12 @@ local function to_str(v)
 end
 
 -- ====== 内部辅助：从 detail 提取统一字段 ======
--- 兼容 bangumi（rating/infobox/tags 对象数组）和 fankuhub（platforms/tags 字符串数组）格式
+-- 兼容 bangumi（rating/infobox/tags 对象数组）和 anilist/mal/baike 格式
 
 -- 提取番剧中文名
 local function get_name_cn(detail, source_name)
     if type(detail) ~= "table" then return "" end
-    if source_name == "fankuhub" then
-        return to_str(detail.titleZh)
-    elseif source_name == "anilist" then
+    if source_name == "anilist" then
         -- AniList title.native 是日文原名，name_cn 字段已由 parse_media 填充
         return to_str(detail.name_cn)
     elseif source_name == "mal" then
@@ -109,14 +107,10 @@ local function get_name_cn(detail, source_name)
     return to_str(detail.name_cn)
 end
 
--- 提取封面图 URL（优先 large，回退 common/coverUrl）
+-- 提取封面图 URL（优先 large，回退 common/medium）
 local function get_cover_url(detail, source_name)
     if type(detail) ~= "table" then return nil end
-    if source_name == "fankuhub" then
-        local url = detail.coverUrl
-        if type(url) == "string" and url ~= "" then return url end
-        return nil
-    elseif source_name == "anilist" or source_name == "mal" then
+    if source_name == "anilist" or source_name == "mal" then
         -- AniList/MAL 返回 images: {large, medium, common}
         local images = detail.images
         if type(images) == "table" then
@@ -140,19 +134,6 @@ end
 local function get_aliases(detail, source_name)
     local aliases = {}
     if type(detail) ~= "table" then return aliases end
-
-    if source_name == "fankuhub" then
-        if detail.titleJa and detail.titleJa ~= "" then
-            table.insert(aliases, {label = "日文名", value = to_str(detail.titleJa)})
-        end
-        if detail.titleEn and detail.titleEn ~= "" then
-            table.insert(aliases, {label = "英文名", value = to_str(detail.titleEn)})
-        end
-        if detail.titleRomaji and detail.titleRomaji ~= "" then
-            table.insert(aliases, {label = "罗马音", value = to_str(detail.titleRomaji)})
-        end
-        return aliases
-    end
 
     -- bangumi: 从 infobox 别名项提取
     local infobox = detail.infobox
@@ -190,29 +171,7 @@ local function get_ratings(detail, source_name)
     local ratings = {}
     if type(detail) ~= "table" then return ratings end
 
-    if source_name == "fankuhub" then
-        local platforms = detail.platforms
-        if type(platforms) == "table" then
-            for name, info in pairs(platforms) do
-                if type(info) == "table" and info.score then
-                    table.insert(ratings, {
-                        platform = name,
-                        score = tonumber(info.score) or 0,
-                        votes = tonumber(info.voteCount) or 0,
-                    })
-                end
-            end
-        end
-        -- 综合评分
-        if detail.aggregateScore then
-            table.insert(ratings, {
-                platform = "综合",
-                score = tonumber(detail.aggregateScore) or 0,
-                votes = 0,
-            })
-        end
-        return ratings
-    elseif source_name == "anilist" then
+    if source_name == "anilist" then
         -- AniList: averageScore (0-100) / meanScore (0-100)
         if detail.score then
             table.insert(ratings, {
@@ -255,51 +214,21 @@ local function get_metadata(detail, source_name)
     if type(detail) ~= "table" then return meta end
 
     -- 类型
-    local type_str
-    if source_name == "fankuhub" then
-        type_str = to_str(detail.type)
-    else
-        type_str = to_str(detail.platform)
-    end
+    local type_str = to_str(detail.platform)
     if type_str ~= "" then
         table.insert(meta, {label = "类型", value = type_str})
     end
 
     -- 首播日期
-    local date_str
-    if source_name == "fankuhub" then
-        date_str = to_str(detail.airDate)
-        if date_str ~= "" then
-            -- ISO 8601 -> YYYY-MM-DD
-            date_str = date_str:match("^(%d+%-%d+%-%d+)") or date_str
-        end
-    else
-        date_str = to_str(detail.date)
-    end
+    local date_str = to_str(detail.date)
     if date_str ~= "" then
         table.insert(meta, {label = "首播", value = date_str})
     end
 
     -- 集数
-    local eps
-    if source_name == "fankuhub" then
-        eps = detail.episodes
-    else
-        eps = detail.eps or detail.eps_count or detail.total_episodes
-    end
+    local eps = detail.eps or detail.eps_count or detail.total_episodes
     if eps and eps ~= 0 then
         table.insert(meta, {label = "集数", value = to_str(eps)})
-    end
-
-    -- 时长
-    if source_name == "fankuhub" then
-        local dur = tonumber(detail.duration)
-        if dur and dur > 0 then
-            local minutes = math.floor(dur / 60)
-            if minutes > 0 then
-                table.insert(meta, {label = "时长", value = minutes .. "分钟"})
-            end
-        end
     end
 
     return meta
@@ -410,56 +339,6 @@ local function get_production_info(detail, source_name)
         return info
     end
 
-    if source_name == "fankuhub" then
-        -- fankuhub: staff 数组（positions）
-        local staff = detail.staff
-        if type(staff) == "table" then
-            for _, s in ipairs(staff) do
-                if type(s) == "table" and type(s.positions) == "table" then
-                    for _, pos in ipairs(s.positions) do
-                        local pos_str = to_str(pos)
-                        local label
-                        if pos_str:find("导演") or pos_str:find("監督") then label = "动漫监督"
-                        elseif pos_str:find("原作") then label = "原作者"
-                        elseif pos_str:find("动画制作") or pos_str:find("制作") then label = "制作"
-                        elseif pos_str:find("改编") then label = "改编"
-                        end
-                        if label then
-                            -- 合并同职位人员
-                            local found = false
-                            for _, e in ipairs(info) do
-                                if e.label == label then
-                                    e.value = e.value .. ", " .. to_str(s.name)
-                                    found = true
-                                    break
-                                end
-                            end
-                            if not found then
-                                table.insert(info, {label = label, value = to_str(s.name)})
-                            end
-                        end
-                    end
-                end
-            end
-        end
-        -- studio 字段补充
-        if detail.studio and detail.studio ~= "" then
-            local found = false
-            for _, e in ipairs(info) do
-                if e.label == "制作" then
-                    found = true
-                    break
-                end
-            end
-            if not found then
-                table.insert(info, {label = "制作", value = to_str(detail.studio)})
-            end
-        end
-        -- 原作类型：fankuhub 无专门字段，从 type 字段推断（若为 "TV"/"OVA" 等则无意义，留空）
-        -- 用户可后续扩展配置映射表
-        return info
-    end
-
     -- bangumi: 从 infobox 提取
     local infobox = detail.infobox
     if type(infobox) == "table" then
@@ -517,12 +396,7 @@ end
 local function get_summary(detail, source_name)
     if type(detail) ~= "table" then return "暂无简介信息" end
 
-    local candidates
-    if source_name == "fankuhub" then
-        candidates = {detail.summary, detail.synopsis, detail.description, detail.intro}
-    else
-        candidates = {detail.summary, detail.synopsis, detail.description, detail.intro}
-    end
+    local candidates = {detail.summary, detail.synopsis, detail.description, detail.intro}
 
     for _, v in ipairs(candidates) do
         if type(v) == "string" and v ~= "" then
@@ -891,18 +765,12 @@ local function render()
     ))
 
     -- 3. 面板标题（fs=32*ui_scale, bold, F0F0F0, \an5 居中 panel_x+panel_w/2）
-    -- v1.6: 标题改为动漫中文标题（优先 name_cn/titleZh），无中文名时回退到 "封面简介"
+    -- v1.6: 标题改为动漫中文标题（优先 name_cn），无中文名时回退到 "封面简介"
     local title_fs = math.floor(32 * ui_scale)
     local title_center_y = layout.panel_y + math.floor(layout.title_h / 2)
     local panel_title = get_name_cn(detail, source_name)
     if panel_title == "" then
-        -- fankuhub 无 titleZh 时尝试 titleJa/name，bangumi 无 name_cn 时尝试 name
-        if source_name == "fankuhub" then
-            panel_title = to_str(detail.titleJa) ~= "" and to_str(detail.titleJa)
-                or to_str(detail.name) or "封面简介"
-        else
-            panel_title = to_str(detail.name) ~= "" and to_str(detail.name) or "封面简介"
-        end
+        panel_title = to_str(detail.name) ~= "" and to_str(detail.name) or "封面简介"
     end
     panel_title = truncate_text(panel_title, 30)
     table.insert(parts, string.format(
@@ -1266,10 +1134,14 @@ local function render()
     -- 7. 底部提示栏（fs=16*ui_scale, A0A0A0, \an5 居中 panel_x+panel_w/2）
     local hint_fs = math.floor(16 * ui_scale)
     local source_display
-    if source_name == "fankuhub" then
-        source_display = "番库"
-    elseif source_name == "bangumi" then
+    if source_name == "bangumi" then
         source_display = "Bangumi"
+    elseif source_name == "anilist" then
+        source_display = "AniList"
+    elseif source_name == "mal" then
+        source_display = "MAL"
+    elseif source_name == "baike" then
+        source_display = "百度百科"
     else
         source_display = "未知"
     end
@@ -1326,8 +1198,8 @@ end
 
 -- show: 入口
 -- new_deps: 调用方传入的 deps（模块使用闭包注入的 deps，此参数仅做签名兼容）
--- detail: 条目详情数据（bangumi 或 fankuhub 格式）
--- source_name: "bangumi" / "fankuhub" / "未知"
+-- detail: 条目详情数据（bangumi / anilist / mal / baike 格式）
+-- source_name: "bangumi" / "anilist" / "mal" / "baike" / "未知"
 function M.show(new_deps, detail, source_name)
     -- 校验 detail 非空
     if type(detail) ~= "table" then

@@ -39,7 +39,6 @@ local opts, deps, init = require("modules.utils.module_loader").make_init(
         feature_cover_intro_flow = "table",
         feature_production_score_flow = "table",
         feature_subject_select = "table",
-        feature_fankuhub_search = "table",
         script_name = "string",
         get_danmaku_info = "function",
         get_current_title = "function",
@@ -139,7 +138,7 @@ local function trigger_silent_load(path)
                     pcall(function()
                         -- characters/persons/all 都需要 characters
                         if depth == "characters" or depth == "persons" or depth == "all" then
-                            -- 仅 bangumi 源支持预取；fankuhub/anilist/mal/baike 接口逻辑复杂，留给用户主动点击时拉取
+                            -- 仅 bangumi 源支持预取；anilist/mal/baike 接口逻辑复杂，留给用户主动点击时拉取
                             local source = subject._source or "bangumi"
                             if source == "bangumi" then
                                 local server_url = (subject.url and subject.url:match("^(https?://[^/]+)")) or "https://api.bgm.tv"
@@ -196,7 +195,7 @@ local function trigger_silent_load(path)
 
     -- 6. 异步转换为中文标题，转换完成后调用搜索管线
     --    uosc_danmaku 历史记录中的 animeTitle 默认已是中文，转换函数会跳过
-    --    仅当从文件名解析出非中文标题时触发转换（dandanplay + TMDB + fankuhub）
+    --    仅当从文件名解析出非中文标题时触发转换（dandanplay + TMDB）
     deps.search_pipeline.resolve_chinese_title(base_title, function(chinese_title)
         if cancelled then return end
         if deps.state.search_state.current_path ~= path then return end
@@ -321,7 +320,6 @@ end
 -- 从 uosc menu 的 on_search 透传 query；query 为空时打开搜索面板
 -- 按 source 分发：
 --   "bangumi" → feature_subject_select
---   "fankuhub" / "fankuhub_person" → feature_fankuhub_search
 --
 -- 2026-10-05：支持 `名称|class` 后缀语法（对齐 uosc_danmaku）。
 --   用户在搜索框里写「无职转生|ds」表示按「电视剧」检索。
@@ -338,9 +336,6 @@ deps.CLASS_TO_SUBJECT_TYPE = CLASS_TO_SUBJECT_TYPE
 
 local function handle_search(source, query)
     local hint_name = "BGM 搜索"
-    if source == "fankuhub" then hint_name = "番库搜索"
-    elseif source == "fankuhub_person" then hint_name = "番库人物搜索"
-    end
     if deps.notify and type(deps.notify.show_click_hint) == "function" then
         pcall(deps.notify.show_click_hint, hint_name, "加载中...")
     end
@@ -361,22 +356,6 @@ local function handle_search(source, query)
     end
     -- 解析出的类别 → Bangumi subject type（仅 bangumi 路径使用）
     local subject_type = query_class and CLASS_TO_SUBJECT_TYPE[query_class] or nil
-
-    -- 番库搜索路径
-    if source == "fankuhub" or source == "fankuhub_person" then
-        if not deps.feature_fankuhub_search then return end
-        if not query or query == "" then
-            -- 打开番库搜索面板
-            if type(deps.feature_fankuhub_search.show_search_panel) == "function" then
-                pcall(deps.feature_fankuhub_search.show_search_panel, nil, source)
-            end
-        else
-            if type(deps.feature_fankuhub_search.search_subject) == "function" then
-                pcall(deps.feature_fankuhub_search.search_subject, query, source)
-            end
-        end
-        return
-    end
 
     -- Bangumi 搜索路径
     if not deps.feature_subject_select then return end
@@ -401,21 +380,8 @@ end
 -- staff-credits-select {id} {source}
 -- 按 source 分发：
 --   "bangumi" → feature_subject_select.handle_bgm_select
---   "fankuhub" / "fankuhub_person" → feature_fankuhub_search.handle_select
 local function handle_select(id_str, source)
     source = source or "bangumi"
-
-    -- 番库路径：id 为字符串（fankuhub API 接受字符串 id）
-    if source == "fankuhub" or source == "fankuhub_person" then
-        if not id_str or id_str == "" then
-            if deps.notify then deps.notify.warn("无效的条目 id") end
-            return
-        end
-        if deps.feature_fankuhub_search and type(deps.feature_fankuhub_search.handle_select) == "function" then
-            pcall(deps.feature_fankuhub_search.handle_select, id_str, source)
-        end
-        return
-    end
 
     -- Bangumi 路径：id 需转换为 number
     if not deps.feature_subject_select then return end
@@ -586,26 +552,6 @@ local function handle_servers_toggle(url)
     end
 end
 
--- staff-credits-fankuhub-search
--- 入口：展示番库搜索面板（source=fankuhub）
--- ADR-09：路由到 feature_fankuhub_search.show_search_panel，由 feature 层负责中文标题转换
-local function handle_fankuhub_search()
-    if deps.notify and type(deps.notify.show_click_hint) == "function" then
-        pcall(deps.notify.show_click_hint, "番库搜索")
-    end
-    if deps.feature_fankuhub_search and type(deps.feature_fankuhub_search.show_search_panel) == "function" then
-        pcall(deps.feature_fankuhub_search.show_search_panel, nil, "fankuhub")
-    end
-end
-
--- staff-credits-fankuhub-search-by-person
--- 入口：展示番库人员搜索面板（source=fankuhub_person）
-local function handle_fankuhub_search_by_person()
-    if deps.feature_fankuhub_search and type(deps.feature_fankuhub_search.show_search_panel) == "function" then
-        pcall(deps.feature_fankuhub_search.show_search_panel, nil, "fankuhub_person")
-    end
-end
-
 -- v1.7: staff-credits-set-config {key} {value}
 -- 接收两个字符串参数，根据 key 类型转换 value
 -- 调用 runtime_config.save(key, value) 持久化（200ms 防抖 + 原子写入）
@@ -704,8 +650,6 @@ function M.register_all()
     mp.register_script_message("staff-credits-servers", handle_servers)
     mp.register_script_message("staff-credits-servers-move", handle_servers_move)
     mp.register_script_message("staff-credits-servers-toggle", handle_servers_toggle)
-    mp.register_script_message("staff-credits-fankuhub-search", handle_fankuhub_search)
-    mp.register_script_message("staff-credits-fankuhub-search-by-person", handle_fankuhub_search_by_person)
     -- v1.7: 运行时配置（持久化到 ~~/staff-credits-runtime-config.json）
     mp.register_script_message("staff-credits-set-config", handle_set_config)
     mp.register_script_message("staff-credits-config", handle_config)

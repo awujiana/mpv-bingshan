@@ -3,7 +3,7 @@
 -- 接口：https://graphql.anilist.co
 -- 特点：无需认证，GraphQL 灵活查询，数据丰富（中文标题/简介/图片/评分/staff/characters）
 -- 限制：速率限制 90 请求/分钟，复杂查询受限
--- 用途：作为 bangumi + fankuhub 失败后的第三数据源
+-- 用途：作为 bangumi 失败后的第三数据源
 -- 遵循 ADR-10 统一 init(opts, deps) 接口
 
 local mp = require("mp")

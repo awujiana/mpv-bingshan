@@ -81,16 +81,12 @@ local state = {
 
 -- ====== 内部辅助：角色数据提取 ======
 
--- 解析角色名称：优先简体中文（name_cn / nameCn），回退 name
+-- 解析角色名称：优先简体中文 name_cn，回退 name
 -- v1.6: 角色介绍要求使用简体中文显示角色名
 local function resolve_character_name(char)
     if type(char) ~= "table" then return "未知角色" end
     if type(char.name_cn) == "string" and char.name_cn ~= "" then
         return char.name_cn
-    end
-    -- fankuhub 兼容字段
-    if type(char.nameCn) == "string" and char.nameCn ~= "" then
-        return char.nameCn
     end
     if type(char.name) == "string" and char.name ~= "" then
         return char.name
@@ -98,16 +94,12 @@ local function resolve_character_name(char)
     return "未知角色"
 end
 
--- 解析 CV 名称：优先简体中文（name_cn / nameCn），回退 name
+-- 解析 CV 名称：优先简体中文 name_cn，回退 name
 -- v1.6: 角色介绍要求 CV 名字使用简体中文
 local function resolve_cv_name(actor)
     if type(actor) ~= "table" then return nil end
     if type(actor.name_cn) == "string" and actor.name_cn ~= "" then
         return actor.name_cn
-    end
-    -- fankuhub 兼容字段
-    if type(actor.nameCn) == "string" and actor.nameCn ~= "" then
-        return actor.nameCn
     end
     if type(actor.name) == "string" and actor.name ~= "" then
         return actor.name
@@ -120,17 +112,12 @@ local function has_character_image(char)
     if type(char) ~= "table" then return false end
     -- v1.6: 多数据源图片字段适配
     -- bangumi: images.medium（主要）/ images.large / images.small
-    -- fankuhub: imageUrl（顶层字符串）或 images 对象
     -- anilist/mal: images.large / images.medium
     local images = char.images
     if type(images) == "string" and images ~= "" then return true end
     if type(images) == "table" then
         local url = images.medium or images.large or images.common or images.url
         if type(url) == "string" and url ~= "" then return true end
-    end
-    -- fankuhub 顶层 imageUrl 字段
-    if type(char.imageUrl) == "string" and char.imageUrl ~= "" then
-        return true
     end
     return false
 end
@@ -145,10 +132,6 @@ local function get_character_image_url(char)
     if type(images) == "table" then
         local url = images.medium or images.large or images.common or images.url
         if type(url) == "string" and url ~= "" then return url end
-    end
-    -- fankuhub 顶层 imageUrl 字段
-    if type(char.imageUrl) == "string" and char.imageUrl ~= "" then
-        return char.imageUrl
     end
     return nil
 end
@@ -173,16 +156,11 @@ end
 
 -- 获取首个 CV 头像 URL
 -- bangumi: actor.images.medium（主要）/ large / small
--- fankuhub: actor.img / actor.imageUrl
 local function get_first_cv_avatar_url(char)
     local actors = get_cv_list(char)
     if #actors == 0 then return nil end
     local first = actors[1]
     if type(first) ~= "table" then return nil end
-    -- fankuhub: img 字段（字符串 URL）
-    if type(first.img) == "string" and first.img ~= "" then
-        return first.img
-    end
     -- bangumi/anilist/mal: images 对象或字符串
     if type(first.images) == "string" and first.images ~= "" then
         return first.images

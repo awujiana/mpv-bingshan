@@ -268,15 +268,7 @@ function M.show_main_menu()
         value = "script-message-to " .. script_name .. " staff-credits-search bangumi",
         keep_open = false,
     })
-    -- 5. 番库搜索
-    table.insert(items, {
-        title = "番库搜索",
-        icon = "video_library",
-        hint = "搜索 fankuhub 聚合源（含图片+声优）",
-        value = "script-message-to " .. script_name .. " staff-credits-fankuhub-search",
-        keep_open = false,
-    })
-    -- 6. 制作评分
+    -- 5. 制作评分
     table.insert(items, {
         title = "制作评分",
         icon = "sentiment_satisfied",
@@ -284,7 +276,7 @@ function M.show_main_menu()
         value = "script-message-to " .. script_name .. " staff-credits-production-score",
         keep_open = false,
     })
-    -- 7. 观看进度（v2.0，需 bangumi_token）
+    -- 6. 观看进度（v2.0，需 bangumi_token）
     --    未配 token 时 progress_sync.build_menu_items() 返回空表 → 此处自动跳过，
     --    不会在菜单里留下点不动的死项。
     if deps.progress_sync and type(deps.progress_sync.build_menu_items) == "function" then
@@ -295,14 +287,14 @@ function M.show_main_menu()
             end
         end
     end
-    -- 8. 分隔项
+    -- 7. 分隔项
     table.insert(items, {
         title = "─── 设置 ───",
         italic = true,
         unselectable = true,
         keep_open = true,
     })
-    -- 9. 网站优先级
+    -- 8. 网站优先级
     table.insert(items, {
         title = "网站优先级",
         icon = "swap_vert",
@@ -310,7 +302,7 @@ function M.show_main_menu()
         value = "script-message-to " .. script_name .. " staff-credits-servers",
         keep_open = false,
     })
-    -- 10. 搜索设置
+    -- 9. 搜索设置
     table.insert(items, {
         title = "搜索设置",
         icon = "settings",
@@ -318,7 +310,7 @@ function M.show_main_menu()
         value = "script-message-to " .. script_name .. " staff-credits-settings",
         keep_open = false,
     })
-    -- 11. 清除当前视频缓存
+    -- 10. 清除当前视频缓存
     table.insert(items, {
         title = "清除当前视频缓存",
         icon = "delete",
@@ -326,7 +318,7 @@ function M.show_main_menu()
         value = "script-message-to " .. script_name .. " staff-credits-clear-cache",
         keep_open = false,
     })
-    -- 12. 清除所有缓存
+    -- 11. 清除所有缓存
     table.insert(items, {
         title = "清除所有缓存",
         icon = "delete_sweep",

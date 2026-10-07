@@ -115,7 +115,7 @@ function M.http_download(url, output_path, opts, callback)
         table.insert(args, "-b")
         table.insert(args, cookie_file)
     end
-    -- v1.6: Referer（防盗链绕过，部分图床如 fankuhub 需要）
+    -- v1.6: Referer（防盗链绕过，部分图床需要）
     if referer and type(referer) == "string" and referer ~= "" then
         table.insert(args, "-e")
         table.insert(args, referer)

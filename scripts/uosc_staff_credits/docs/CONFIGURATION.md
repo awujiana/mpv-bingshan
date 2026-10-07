@@ -35,7 +35,7 @@ runtime_config（运行时持久化） > script-opts（uosc_staff_credits.conf�
 - 文件路径：`script-opts/uosc_staff_credits.conf`
 - 读取机制：`defaults.lua` 通过 `mp.get_opt(k)` 读取，按 `defaults` 表中的类型自动转换（boolean 接受 `yes/no/true/false/1/0`，number 用 `tonumber` 转换，其他为字符串）
 - 修改后需重启 mpv 才能生效
-- 支持全部 24 个配置项
+- 支持全部 27 个配置项
 
 **defaults（内置默认值）**
 - 位于 `modules/defaults.lua` 的 `M.defaults` 表
@@ -61,7 +61,7 @@ end
 
 ## 2. script-opts 配置项
 
-共 29 项配置，按功能分组说明。所有配置项均可在 `script-opts/uosc_staff_credits.conf` 中覆盖默认值。
+共 27 项配置，按功能分组说明。所有配置项均可在 `script-opts/uosc_staff_credits.conf` 中覆盖默认值。
 
 > **类型说明**：boolean 类型接受 `yes/no/true/false/1/0`；number 类型接受正整数；string 类型为任意字符串。
 
@@ -85,8 +85,8 @@ end
 
 | 名称 | 类型 | 默认值 | 可选值 | 说明 | 示例 |
 |------|------|--------|--------|------|------|
-| `timeout` | number | `8` | 正整数（秒） | loading 倒计时**显示**超时，仅决定「剩余 Ns」倒计时何时变为"请求超时，正在等待响应"提示；**不直接掐断**网络请求（v1.9 由 15 降至 8，因 fankuhub 快速路径通常 2-3s、bangumi 5-8s 即可返回） | `timeout=8` |
-| `request_timeout` | number | `15` | 正整数（秒） | 网络请求**真实**超时（v1.9.1 新增，从 `timeout` 分离），映射为 api/fankuhub/dandanplay/extra 的 curl `--max-time`，直接决定单次 HTTP 请求最长等待时间。热门番剧 `persons`/`characters` 端点数据量大，需要比搜索更长的窗口；频繁遇到 `curl exit code 28` 可增大此值 | `request_timeout=15` |
+| `timeout` | number | `8` | 正整数（秒） | loading 倒计时**显示**超时，仅决定「剩余 Ns」倒计时何时变为"请求超时，正在等待响应"提示；**不直接掐断**网络请求（v1.9 由 15 降至 8，因 bangumi 搜索通常 5-8s 即可返回） | `timeout=8` |
+| `request_timeout` | number | `15` | 正整数（秒） | 网络请求**真实**超时（v1.9.1 新增，从 `timeout` 分离），映射为 api/dandanplay/extra 的 curl `--max-time`，直接决定单次 HTTP 请求最长等待时间。热门番剧 `persons`/`characters` 端点数据量大，需要比搜索更长的窗口；频繁遇到 `curl exit code 28` 可增大此值 | `request_timeout=15` |
 | `user_agent` | string | `uosc_staff_credits (https://github.com/user/uosc_staff_credits)` | 任意字符串 | HTTP 请求的 User-Agent 头部。Bangumi 官方 API 要求含联系方式，建议格式：`项目名 (联系方式URL或邮箱)` | `user_agent=uosc_staff_credits (https://github.com/yourname/uosc_staff_credits)` |
 
 ### 2.4 SSL/TLS 配置
@@ -107,10 +107,12 @@ end
 
 ### 2.6 数据源配置
 
-| 名称 | 类型 | 默认值 | 可选值 | 说明 | 示例 |
-|------|------|--------|--------|------|------|
-| `data_source` | string | `auto` | `bangumi` / `fankuhub` / `auto` | 角色和职员信息的数据源。`bangumi` 使用 Bangumi API（需多次请求获取角色+职员）；`fankuhub` 使用 fankuhub.com API（聚合 Bangumi/MAL/AniList，一次请求获取全部）；`auto` 先尝试 fankuhub，失败回退到 bangumi（推荐）。**注意**：此项仅在 servers 列表为空时使用，推荐在 Bangumi 工具箱 → 网站优先级 中配置 | `data_source=auto` |
-| `fankuhub_api_base` | string | `https://fankuhub.com` | 任意 HTTPS URL | fankuhub API 基础 URL | `fankuhub_api_base=https://fankuhub.com` |
+**本节无 script-opts 配置项。** 数据源完全由「网站优先级」列表（`~~/staff-credits-servers.json`）决定，
+在 mpv 中通过 **Bangumi 工具箱 → 网站优先级** 菜单配置排序与启用状态。
+
+> 历史说明：v2.0 之前此处有 `data_source`（`bangumi` / `fankuhub` / `auto`）与
+> `fankuhub_api_base` 两个配置项，用于在 servers 列表为空时选择数据源。
+> 因 `fankuhub` 聚合源已移除、`auto` 与 `bangumi` 语义重合，两项均已删除。
 
 ### 2.7 缓存配置
 
@@ -183,7 +185,8 @@ token 为空时这 4 项形同不存在（一个请求都不会发）。
 | `MAX_ENTRIES` | `5000` | 搜索历史 LRU 阈值，超过后自动淘汰最旧记录 |
 | `DEFAULT_MAX_LAST_SUBJECT_ENTRIES` | `50` | state 中最近条目缓存上限 |
 | `DEFAULT_COVER_INTRO_CACHE_TTL` | `1800`（秒） | 封面介绍缓存 TTL，30 分钟 |
-| `SCHEMA_VERSION` | `4` | servers 配置版本号，用于迁移检测 |
+
+> `SCHEMA_VERSION`（servers 配置版本号）定义在 `modules/servers.lua`，当前为 `5`。
 
 ---
 
@@ -323,7 +326,6 @@ max_results=10
 # script-opts/uosc_staff_credits.conf
 api_base_url=https://api.bangumi.one
 enable_extra_search=no             # 关闭外部搜索源减少请求
-data_source=bangumi                # 仅用 Bangumi，不调 fankuhub
 autoload_with_danmaku=no           # 关闭随弹幕静默预加载
 silent_preload_depth=subject       # 仅预取条目 ID，最省流量
 data_cache_days=90                 # 拉长缓存有效期减少重复请求
@@ -379,12 +381,10 @@ c script-message-to uosc_staff_credits staff-credits-set-config enable_data_cach
 | `collection_type_on_mark` | number | `3` | 否 |
 | `danmaku_api_server` | string | `https://api.dandanplay.net` | 否 |
 | `data_cache_days` | number | `30` | 是 |
-| `data_source` | string | `auto` | 否 |
 | `debug` | boolean | `true` | 是 |
 | `enable_data_cache` | boolean | `true` | 是 |
 | `enable_extra_search` | boolean | `true` | 否 |
 | `enable_progress_sync` | boolean | `true` | 否 |
-| `fankuhub_api_base` | string | `https://fankuhub.com` | 否 |
 | `history_path` | string | `~~/staff-credits-history.json` | 否 |
 | `image_cache_days` | number | `30` | 是 |
 | `insecure` | boolean | `false` | 否 |

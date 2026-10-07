@@ -156,7 +156,6 @@ function M.run()
     load_mod("modules.api", false)
     load_mod("apis.dandanplay", false)
     load_mod("apis.extra", false)
-    load_mod("apis.fankuhub", false)
     load_mod("apis.anilist", false)
     load_mod("apis.mal", false)
     load_mod("apis.baike", false)
@@ -174,7 +173,6 @@ function M.run()
     load_mod("features.cover_intro_flow", false)
     load_mod("features.production_score_flow", false)
     load_mod("features.subject_select", false)
-    load_mod("features.fankuhub_search", false)
     load_mod("features.progress_sync", false)   -- v2.0: 观看进度同步（需 token）
 
     -- 4.5 表示层
@@ -272,7 +270,6 @@ function M.run()
     local api_mod = mods["modules.api"]
     local dandanplay_mod = mods["apis.dandanplay"]
     local extra_mod = mods["apis.extra"]
-    local fankuhub_mod = mods["apis.fankuhub"]
     local anilist_mod = mods["apis.anilist"]
     local mal_mod = mods["apis.mal"]
     local baike_mod = mods["apis.baike"]
@@ -339,13 +336,6 @@ function M.run()
         request_registry = request_registry_mod,
     }, "extra", false) then return false end
 
-    -- 步骤 10: apis.fankuhub.init(opts, {notify, guess, request_registry})
-    if not init_module(fankuhub_mod, opts, {
-        notify = notify_mod,
-        guess = guess_mod,
-        request_registry = request_registry_mod,
-    }, "fankuhub", false) then return false end
-
     -- 步骤 10.1: apis.anilist.init(opts, {notify, request_registry})
     -- v1.6: AniList GraphQL API，无需认证，作为第三数据源
     if not init_module(anilist_mod, opts, {
@@ -396,7 +386,6 @@ function M.run()
         api = api_mod,
         dandanplay = dandanplay_mod,
         extra = extra_mod,
-        fankuhub = fankuhub_mod,
         anilist = anilist_mod,
         mal = mal_mod,
         baike = baike_mod,
@@ -427,7 +416,6 @@ function M.run()
         request_registry = request_registry_mod,
         search_pipeline = search_pipeline_mod,
         servers = servers_mod,
-        fankuhub = fankuhub_mod,
         anilist = anilist_mod,
         mal = mal_mod,
         baike = baike_mod,
@@ -452,7 +440,6 @@ function M.run()
     init_feature(mods["features.cover_intro_flow"], feature_deps, "cover_intro_flow")
     init_feature(mods["features.production_score_flow"], feature_deps, "production_score_flow")
     init_feature(mods["features.subject_select"], feature_deps, "subject_select")
-    init_feature(mods["features.fankuhub_search"], feature_deps, "fankuhub_search")
     init_feature(mods["features.progress_sync"], feature_deps, "progress_sync")
 
     -- 步骤 15: menu.init(opts, {servers, script_name=script_name, state, opts, runtime_config, progress_sync})
@@ -547,7 +534,6 @@ function M.run()
         feature_cover_intro_flow = mods["features.cover_intro_flow"],
         feature_production_score_flow = mods["features.production_score_flow"],
         feature_subject_select = mods["features.subject_select"],
-        feature_fankuhub_search = mods["features.fankuhub_search"],
         feature_progress_sync = mods["features.progress_sync"],   -- v2.0
         bangumi_user = bangumi_user_mod,                          -- v2.0
         script_name = script_name,

@@ -12,7 +12,8 @@ local M = {}
 M.MAX_ENTRIES = 5000                          -- history LRU 阈值
 M.DEFAULT_MAX_LAST_SUBJECT_ENTRIES = 50       -- state 缓存上限
 M.DEFAULT_COVER_INTRO_CACHE_TTL = 1800        -- 封面缓存 30 分钟（秒）
-M.SCHEMA_VERSION = 4                          -- servers 配置版本
+-- 注: servers 配置版本号 SCHEMA_VERSION 由 modules/servers.lua 自己持有（当前 5），
+--     此处不再重复定义，避免两处数字不同步造成误导。
 
 -- === 配置默认值表 ===
 -- 与 script-opts/uosc_staff_credits.conf 中的配置项一一对应
@@ -38,7 +39,7 @@ M.defaults = {
     -- ⚠️ Bangumi **新 API** 取值，与旧版文档顺序不同：
     --    1=想看  2=看过  3=在看  4=搁置  5=抛弃
     collection_type_on_mark = 3,
-    timeout = 8,  -- v1.9: loading 倒计时显示超时（秒）。fankuhub 快速路径通常 2-3s 返回，bangumi 5-8s
+    timeout = 8,  -- v1.9: loading 倒计时显示超时（秒）。bangumi 搜索通常 5-8s
     -- v1.9.1: 网络请求超时（curl --max-time），独立于 loading 显示超时
     --       persons/characters 等详情端点数据量大（尤其热门番剧），需要比搜索更长的超时
     request_timeout = 15,  -- 单次 HTTP 请求最大耗时（秒），仅影响 curl 子进程
@@ -49,8 +50,6 @@ M.defaults = {
     user_agent = "uosc_staff_credits (https://github.com/user/uosc_staff_credits)",
     title_replace = [[{"rules": [{"^〔(.-)〕": "%1"}, {"^.*《(.-)》": "%1"}]}]],
     enable_extra_search = true,
-    data_source = "auto",
-    fankuhub_api_base = "https://fankuhub.com",
     image_cache_days = 30,
     autoload_with_danmaku = true,
     -- SSL/TLS 配置（解决 Windows curl exit code 35 握手失败）

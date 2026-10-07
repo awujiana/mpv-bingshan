@@ -1,6 +1,6 @@
 -- modules/name_resolver.lua
 -- 名称优先级解析模块
--- 根据 Bangumi / fankuhub 等数据源的字段优先级返回展示名
+-- 根据 Bangumi / AniList / MAL / 百度百科 等数据源的字段优先级返回展示名
 -- 遵循 ADR-10 统一 init(opts, deps) 接口
 
 local M = {}
@@ -33,9 +33,9 @@ end
 
 -- resolve_person: 人员（person）名称解析
 -- 优先级：name (中文) → name_en → name_jp → "未知"
--- 兼容 Bangumi 与 fankuhub 两种字段命名：
+-- 兼容 Bangumi 与 AniList/MAL 两种字段命名：
 --   Bangumi: name (日文)
---   fankuhub: name (日文), nameCn (中文), name_en 等
+--   AniList/MAL: name (默认标题), name_en 等
 -- 这里按任务规约：name → name_en → name_jp
 function M.resolve_person(person)
     if type(person) ~= "table" then
@@ -50,10 +50,6 @@ function M.resolve_person(person)
     if person.name_jp and person.name_jp ~= "" then
         return tostring(person.name_jp)
     end
-    -- fankuhub 兼容字段
-    if person.nameCn and person.nameCn ~= "" then
-        return tostring(person.nameCn)
-    end
     return "未知"
 end
 
@@ -65,10 +61,6 @@ function M.resolve_character(char)
     end
     if char.name_cn and char.name_cn ~= "" then
         return tostring(char.name_cn)
-    end
-    -- fankuhub 兼容字段
-    if char.nameCn and char.nameCn ~= "" then
-        return tostring(char.nameCn)
     end
     if char.name and char.name ~= "" then
         return tostring(char.name)

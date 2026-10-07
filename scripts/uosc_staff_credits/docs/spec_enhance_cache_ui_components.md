@@ -11,7 +11,6 @@
    - 命中本地持久化缓存：`从本地缓存加载`
    - 命中内存缓存（cover_intro 30 分钟 TTL）：`从内存缓存加载`
    - 从 Bangumi 站点加载：`从 Bangumi 加载`
-   - 从番库加载：`从番库加载`
    - 从 AniList / MAL / 百度百科加载：对应名称
    - 搜索类功能：`搜索中...` / `从 X 加载 N 条结果` / `加载详情中...` / `从 X 加载详情`
 
@@ -24,8 +23,6 @@
 | 封面简介 | `cover-intro` | `features/cover_intro_flow.lua` |
 | 制作评分 | `staff-credits-production-score` | `features/production_score_flow.lua` |
 | BGM 搜索 | `staff-credits-search bangumi` | `features/subject_select.lua` |
-| 番库搜索 | `staff-credits-search fankuhub` | `features/fankuhub_search.lua` |
-| 番库人物搜索 | `staff-credits-search fankuhub_person` | `features/fankuhub_search.lua` |
 
 ## 三、API 设计
 
@@ -49,17 +46,16 @@
 - `handle_character_intro` → `"角色介绍", "加载中..."`
 - `handle_cover_intro` → `"封面简介", "加载中..."`
 - `handle_production_score` → `"制作评分", "加载中..."`
-- `handle_search` 根据 source 区分：`"BGM 搜索"` / `"番库搜索"` / `"番库人物搜索"`，detail=`"加载中..."`
+- `handle_search` 固定为 `"BGM 搜索"`，detail=`"加载中..."`（v2.0：番库搜索路由已移除）
 
 ### 4.2 数据层（features/*.lua）
 
 | 模块 | 调用点 1 | 调用点 2 |
 |------|----------|----------|
-| `cover_intro_flow.lua` | 本地缓存命中 → `从本地缓存加载`<br>内存缓存命中 → `从内存缓存加载` | 网络回调成功 → `从 {Bangumi\|番库\|AniList\|MAL\|百度百科} 加载` |
+| `cover_intro_flow.lua` | 本地缓存命中 → `从本地缓存加载`<br>内存缓存命中 → `从内存缓存加载` | 网络回调成功 → `从 {Bangumi\|AniList\|MAL\|百度百科} 加载` |
 | `staff_credits.lua` | 本地缓存命中 → `从本地缓存加载` | 网络回调成功 → `从 {source} 加载` |
 | `character_cards.lua` | 本地缓存命中 → `从本地缓存加载` | 网络回调成功 → `从 {source_name} 加载` |
 | `production_score_flow.lua` | 本地缓存命中 → `从本地缓存加载` | pending=0 全部作品返回 → `从 {source} 加载` |
-| `fankuhub_search.lua` | `search_subject` 入口 → `搜索中...`<br>`handle_select` 入口 → `加载详情中...` | 搜索回调 → `从番库加载 N 条结果`<br>详情回调 → `从番库加载详情` |
 | `subject_select.lua` | `search_subject` 入口 → `搜索中...`<br>`handle_bgm_select` 入口 → `加载详情中...` | 搜索回调 → `从 Bangumi 加载 N 条结果`<br>详情回调 → `从 Bangumi 加载详情` |
 
 ## 五、实现状态
@@ -74,7 +70,6 @@
 | `features/staff_credits.lua` | 2 个加载节点（本地缓存 / 网络回调）添加提示 |
 | `features/character_cards.lua` | 2 个加载节点（本地缓存 / 网络回调）添加提示 |
 | `features/production_score_flow.lua` | 2 个加载节点（本地缓存 / 网络回调全部完成）添加提示 |
-| `features/fankuhub_search.lua` | `search_subject` / `handle_select` 入口 + 回调共 4 个提示点 |
 | `features/subject_select.lua` | `search_subject` / `handle_bgm_select` 入口 + 回调共 4 个提示点 |
 
 ### 待验证 ⏳
@@ -82,7 +77,7 @@
 - 重启 mpv 实测 OSD 显示效果
 - 测试本地缓存命中场景（重复点击同一功能）
 - 测试网络加载场景（清空缓存后点击）
-- 测试搜索类功能（BGM 搜索 / 番库搜索）
+- 测试搜索类功能（BGM 搜索）
 
 ## 六、非目标
 
@@ -101,9 +96,8 @@
 
 - [ ] 启动 mpv 加载视频
 - [ ] 点击"封面简介"按钮 → OSD 显示 `[Bangumi 工具箱] 封面简介 · 加载中...`
-- [ ] 首次加载完成 → OSD 显示 `[Bangumi 工具箱] 封面简介 · 从 Bangumi 加载` 或 `从番库加载`
+- [ ] 首次加载完成 → OSD 显示 `[Bangumi 工具箱] 封面简介 · 从 Bangumi 加载`
 - [ ] 关闭后再次点击 → OSD 显示 `从本地缓存加载`
 - [ ] 同样验证职员表 / 角色介绍 / 制作评分
 - [ ] 打开 BGM 搜索面板，输入关键词 → 显示 `BGM 搜索 · 搜索中...` → `从 Bangumi 加载 N 条结果`
 - [ ] 选中搜索结果 → 显示 `加载详情中...` → `从 Bangumi 加载详情`
-- [ ] 番库搜索同理

@@ -460,7 +460,7 @@ if person.type == api.CHAR_TYPE_CHARACTER then  -- CHAR_TYPE_CHARACTER = 1
 -- type=2: 职员，relation 字段为职位名称
 elseif person.type == api.CHAR_TYPE_STAFF then  -- CHAR_TYPE_STAFF = 2
     -- 提取 id/name/relation/images
-    -- 将 relation 转为 positions 数组（与 fankuhub 数据结构统一）
+    -- 将 relation 转为 positions 数组（统一数据结构）
     -- positions = { relation }
 end
 ```
@@ -614,7 +614,7 @@ https://lain.bgm.tv/r/{size}/pic/{type}/{path}/{filename}.jpg
 
 - `size`: `100`/`200`/`400`（对应 small/medium/large）
 - `type`: `cover`（条目封面）/`crt`（人物/角色）/`photo`（照片）
-- 图片格式为 JPG，mpv 原生支持，**无需转换**（与 fankuhub 的 WebP 不同）
+- 图片格式为 JPG，mpv 原生支持，**无需转换**
 
 ---
 
@@ -659,14 +659,13 @@ https://lain.bgm.tv/r/{size}/pic/{type}/{path}/{filename}.jpg
 
 ### 配置
 
-镜像站配置存储于 `~~/staff-credits-servers.json`，schema 版本 v4（含 `bangumi.lol` 镜像首选）。
+镜像站配置存储于 `~~/staff-credits-servers.json`，schema 版本 v5（含 `bangumi.lol` 镜像首选）。
 
 ```json
 {
-  "_schema_version": 4,
+  "_schema_version": 5,
   "servers": [
     { "url": "https://api.bangumi.lol", "type": "bangumi", "enabled": true, "is_official": false, "note": "镜像(首选)" },
-    { "url": "https://fankuhub.com", "type": "fankuhub", "enabled": true, "is_official": false, "note": "聚合源" },
     { "url": "https://api.bangumi.one", "type": "bangumi", "enabled": true, "is_official": false, "note": "镜像" },
     { "url": "https://api.bgm.tv", "type": "bangumi", "enabled": true, "is_official": true, "note": "官方" }
   ]
@@ -742,7 +741,7 @@ api.search_subject_parallel(servers, keyword, callback)
 解析 persons API 返回数据，提取角色（type=1）和职员（type=2）。
 
 - **返回**: 角色和职员列表，每项含 `{id, name, relation, image, actors, type, positions}`
-- 职员的 `relation` 字段会同步到 `positions` 数组（与 fankuhub 数据结构统一）
+- 职员的 `relation` 字段会同步到 `positions` 数组（统一数据结构）
 
 #### `api.build_character_entries(chars_data, actors_map)`
 
@@ -755,7 +754,7 @@ api.search_subject_parallel(servers, keyword, callback)
 
 将 persons 数据中的 actors 合并到 characters 列表。
 
-### 数据格式（与 fankuhub 兼容）
+### 数据格式（统一格式）
 
 ```lua
 -- 角色数据（统一格式）
@@ -784,36 +783,44 @@ api.search_subject_parallel(servers, keyword, callback)
 }
 ```
 
-### 封面简介数据合并流程
+### 封面简介数据获取流程
 
-位于 `features/cover_intro_flow.lua`，数据源优先级：fankuhub → bangumi.lol 镜像 → bgm.tv 官方
+位于 `features/cover_intro_flow.lua`。
 
 ```
-fankuhub.fetch_cover_intro()
+cover_intro_flow.fetch_detail_and_show(subject, title, entry_path)
+      │
+      ├─ ① 本地持久化缓存命中  data_cache.load(entry_path, "detail")
+      │        → OSD 提示「从本地缓存加载」
+      │
+      └─ ② 内存缓存命中（30 分钟 TTL）state.search_state.cover_intro_cache[title]
+               → OSD 提示「从内存缓存加载」
+      │
+      ▼ 两者都未命中
+按 subject._source 选择详情接口
+      │
+      ├─ bangumi（默认）  → api.get_subject_detail(subject.id, server_url)
+      └─ anilist/mal/baike → 各自的 get_subject_detail_compatible(subject.id)
       │ 成功
       ▼
-┌─────────────────────────────────┐
-│ 用 fankuhub 数据显示（含 platforms 多平台评分）│
-└─────────────────────────────────┘
-      │ 失败/数据不完整
+写回 cover_intro_cache + data_cache
       ▼
-search_pipeline.search_subject_enhanced()
-      │ 调用 api.search_subject_parallel（多镜像并发）
-      ▼
-api.get_subject_detail(result.id)
-      │ 成功
-      ▼
-bangumi_detail_to_cover(detail)
-      │ 合并 fankuhub 数据（若有）:
-      │   - cover_url: fankuhub 优先
-      │   - tags: fankuhub 优先
-      │   - date: fankuhub 优先
-      │   - episode_count: fankuhub 优先
-      │   - score: fankuhub 优先
-      │   - summary: bangumi 补充（fankuhub summary 为空时）
-      ▼
-cover_intro.show(merged_data)
+cover_intro.show(deps, detail, source)
 ```
+
+搜索阶段（`app/search_pipeline.lua`）的数据源顺序：
+
+```
+servers.get_active_sources()          -- 「网站优先级」列表，按顺序尝试
+      │ 逐个 try_bangumi(source.url)
+      ▼ 全部失败
+try_multi_source_fallback()           -- anilist → mal → baike
+      ▼ 全部失败
+finish_all_fail()                     -- 提示「所有数据源均无结果」
+```
+
+> 历史说明：v2.0 之前该链首位还有一个 `fankuhub` 聚合源（`fankuhub.search()` 一次请求
+> 返回角色+声优+图片），并带一条「优先快速路径」。因该源已移除，链变为上述形式。
 
 ### V4-P3 面板布局规范
 
@@ -833,17 +840,19 @@ uosc_staff_credits 的三个主要面板均采用统一布局规范：
 - OSD 高度不足时，面板高度按比例缩小（`h_scale = min(1.0, max_panel_h / panel_h_base)`）
 - overlay 分辨率与 OSD 尺寸一致，ASS 绘图坐标直接对应 overlay 像素位置
 
-#### Bangumi 数据源与 fankuhub 的差异
+#### 各数据源的字段差异
 
-| 信息项 | fankuhub | Bangumi 镜像/官方 |
-|--------|----------|-------------------|
-| 多平台评分 | `platforms` 数组（Bangumi+MAL+AniList） | 仅 `rating.score`（单平台） |
-| 综合评分 | `aggregateScore`（聚合分） | `rating.score` |
-| 制作信息 | 从 `staff.positions` 提取 | 从 `infobox` 键值对提取 |
-| 简介 | `summary`/`synopsis`/`description` 多层回退 | `summary` 字段 |
-| 标签 | `tags` 字符串数组 | `tags` 对象数组 `{name, count}` |
-| 图片格式 | WebP | JPG |
-| 数据合并 | fankuhub 优先 | bangumi 补充（summary 为空时） |
+`modules/cover_intro.lua` 与 `modules/cards.lua` 用同一套渲染代码消费四种格式，
+下表是它们各自的字段来源：
+
+| 信息项 | Bangumi 镜像/官方 | AniList | MAL | 百度百科 |
+|--------|------------------|---------|-----|---------|
+| 中文名 | `name_cn` | `name_cn`（由 `parse_media` 填充） | `name_cn`（由 `parse_anime` 填充） | `name` |
+| 评分 | `rating.score`（单平台） | `score`（0-100，无投票数） | `score`（0-10）+ `_raw.scoring_users` | 无 |
+| 制作信息 | 从 `infobox` 键值对提取 | 同 Bangumi | 同 Bangumi | 同 Bangumi |
+| 简介 | `summary` 字段 | `summary`/`synopsis`/`description`/`intro` 多层回退 | 同 AniList | 同 AniList |
+| 标签 | `tags` 对象数组 `{name, count}` | 字符串或对象数组 | 同 AniList | 同 AniList |
+| 封面 | `images.large/common/medium`（JPG） | `images.large/common/medium` | 同 AniList | 无图片 |
 
 ---
 

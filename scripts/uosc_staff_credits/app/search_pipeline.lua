@@ -5,7 +5,7 @@
 --
 -- 三个公共接口：
 --   search_subject_enhanced       多源增强搜索（dandanplay + extra + bangumi）
---   fetch_characters_from_source  数据源优先级获取角色（fankuhub / bangumi）
+--   fetch_characters_from_source  数据源优先级获取角色（bangumi → 多源分发）
 --   run_subject_pipeline          通用 7 步管线（4 个 feature 共用）
 
 local mp = require("mp")
@@ -19,7 +19,6 @@ local opts, deps, init = require("modules.utils.module_loader").make_init(
         api = "table",
         dandanplay = "table",
         extra = "table",
-        fankuhub = "table",
         anilist = "table",
         mal = "table",
         baike = "table",
@@ -163,30 +162,6 @@ local function resolve_chinese_title(title, callback)
         end)
     end
 
-    -- 数据源 3: fankuhub（境外 Bangumi/TMDB 不可达时的兜底，返回 name_cn）
-    if deps.fankuhub and type(deps.fankuhub.search) == "function" then
-        pending = pending + 1
-        deps.fankuhub.search(title, function(success, results, _err_info)
-            pending = pending - 1
-            if success and type(results) == "table" then
-                for _, r in ipairs(results) do
-                    if type(r) == "table" and r.name_cn and r.name_cn ~= "" then
-                        -- 2026-10-05 修正：原用 is_chinese(r.name_cn)。
-                        -- is_chinese 是「含汉字」的字节区间判定，繁体/日文汉字
-                        -- 全部为 true → 繁体 name_cn 会被**原样**当成结果返回，
-                        -- 用户看到的仍是繁体。改为：先简体化，再判「是简体中文」。
-                        local cs = title_normalize.to_simplified(r.name_cn)
-                        if title_normalize.is_simplified_chinese(cs) then
-                            if not best_candidate then best_candidate = cs end
-                            break
-                        end
-                    end
-                end
-            end
-            try_finish()
-        end)
-    end
-
     -- 无可用数据源，直接返回原标题
     if pending == 0 then
         done = true
@@ -196,7 +171,7 @@ end
 M.resolve_chinese_title = resolve_chinese_title
 
 -- build_subject_info: 从 subject 构造可缓存的最小条目信息
--- v1.6: 保留 _source 字段，避免缓存命中时 fetch_and_show 错误地用 bangumi API 查 fankuhub id
+-- v1.6: 保留 _source 字段，避免缓存命中时 fetch_and_show 用错数据源的接口
 local function build_subject_info(subject)
     if type(subject) ~= "table" then return nil end
     local info = {
@@ -206,7 +181,7 @@ local function build_subject_info(subject)
         url = subject.url,
         _ts = mp.get_time(),
     }
-    -- 保留数据源标识（fankuhub/anilist/mal/baike/bangumi），缺失时默认 "bangumi"
+    -- 保留数据源标识（anilist/mal/baike/bangumi），缺失时默认 "bangumi"
     if type(subject._source) == "string" and subject._source ~= "" then
         info._source = subject._source
     else
@@ -276,7 +251,7 @@ end
 -- 流程：
 --   1. 调用 resolve_title_sync 获取基础标题
 --   2. 已本地转成简体中文，直接 callback
---   3. 否则调用 resolve_chinese_title 转换（dandanplay + extra + fankuhub 并发）
+--   3. 否则调用 resolve_chinese_title 转换（dandanplay + extra 并发）
 --   4. 转换失败则返回「本地简体化」的标题
 -- callback(chinese_title, season_num): 转换完成回调
 --
@@ -481,29 +456,25 @@ function M.search_subject_enhanced(title, season_num, callback, on_progress, ski
         return results[1]
     end
 
-    -- try_fankuhub_fallback: Bangumi 全部失败时的兜底，用 fankuhub 搜索 subject
+    -- try_multi_source_fallback: Bangumi 全部失败时的多源顺序兜底
     -- 构造与 bangumi subject 兼容的结构 {id, name, name_cn, url, _source}
-    -- v1.6: 扩展为多源顺序兜底链：fankuhub → anilist → mal → baike
-    local function try_fankuhub_fallback(query_title)
+    -- v1.6: 多源顺序兜底链
+    -- 2026-10-07: 更名为 try_multi_source_fallback（原名 try_fankuhub_fallback）。
+    --   该函数早已是通用链，名字却停留在「只有 fankuhub」的时代 —— 误导性命名。
+    --   同时移除 fankuhub 源（用户决定不再使用），链变为 anilist → mal → baike。
+    local function try_multi_source_fallback(query_title)
         -- v1.6: 多源兜底链定义（顺序尝试，任一成功即停止）
         -- 各数据源返回 results 数组，取首个构造 subject
         local fallback_sources = {}
 
-        -- 1. fankuhub
-        if deps.fankuhub and type(deps.fankuhub.search) == "function" then
-            table.insert(fallback_sources, {
-                name = "fankuhub",
-                search_fn = function(q, cb) deps.fankuhub.search(q, cb) end,
-            })
-        end
-        -- 2. anilist（无需认证）
+        -- 1. anilist（无需认证）
         if deps.anilist and type(deps.anilist.search) == "function" then
             table.insert(fallback_sources, {
                 name = "anilist",
                 search_fn = function(q, cb) deps.anilist.search(q, cb) end,
             })
         end
-        -- 3. mal（需配置 client_id）
+        -- 2. mal（需配置 client_id）
         if deps.mal and type(deps.mal.is_available) == "function"
            and deps.mal.is_available()
            and type(deps.mal.search) == "function" then
@@ -512,7 +483,7 @@ function M.search_subject_enhanced(title, season_num, callback, on_progress, ski
                 search_fn = function(q, cb) deps.mal.search(q, cb) end,
             })
         end
-        -- 4. baike（中文标题与简介兜底）
+        -- 3. baike（中文标题与简介兜底）
         if deps.baike and type(deps.baike.search) == "function" then
             table.insert(fallback_sources, {
                 name = "baike",
@@ -587,9 +558,9 @@ function M.search_subject_enhanced(title, season_num, callback, on_progress, ski
         deps.api.search_subject_parallel(best, active_servers, function(success, results, err_info)
             if done then return end
             if not success then
-                -- Bangumi 全部失败：用 fankuhub 兜底
-                debug_log("search_subject_enhanced: bangumi search failed, trying fankuhub fallback")
-                try_fankuhub_fallback(best)
+                -- Bangumi 全部失败：走多源顺序兜底
+                debug_log("search_subject_enhanced: bangumi search failed, trying multi-source fallback")
+                try_multi_source_fallback(best)
                 return
             end
             -- v1.8: 用 select_best_subject 替代 results[1]，根据标题中的季数信息筛选
@@ -599,9 +570,9 @@ function M.search_subject_enhanced(title, season_num, callback, on_progress, ski
                 result = select_best_subject(results, title, season_num)
             end
             if not result then
-                -- 无结果：用 fankuhub 兜底
-                debug_log("search_subject_enhanced: bangumi empty results, trying fankuhub fallback")
-                try_fankuhub_fallback(best)
+                -- 无结果：走多源顺序兜底
+                debug_log("search_subject_enhanced: bangumi empty results, trying multi-source fallback")
+                try_multi_source_fallback(best)
                 return
             end
             done = true
@@ -660,11 +631,13 @@ function M.search_subject_enhanced(title, season_num, callback, on_progress, ski
 end
 
 -- ============ 7.2 fetch_characters_from_source ============
--- 数据源优先级获取角色：fankuhub（快，一次请求返回全部）→ bangumi（含图片兜底）
+-- 数据源优先级获取角色：bangumi 优先（含图片），失败时走多源分发（anilist/mal/baike）
 -- v1.9: 性能优化：
---   1. fankuhub 作为第一优先级时，跳过 search_subject_enhanced（省去 3-8s 的多源搜索）
 --   2. bangumi 路径中 get_subject_characters 与 get_subject_persons 并行请求（省去 2-5s）
 --   3. 超时配置拆分：loading 显示超时 vs 网络请求超时
+-- 2026-10-07: 移除 fankuhub 快速路径（用户决定不再使用）。原先它排在 bangumi
+--   之前以省去 3-8s 的多源搜索；移除后角色获取一律先走 bangumi，
+--   仅在 bangumi 不可用时才落到 anilist/mal/baike 分发链。
 --
 -- 签名: fetch_characters_from_source(title, season_num, on_progress, callback, skip_extra)
 -- 回调契约: callback(success, characters, persons, err_info, source_name)
@@ -732,8 +705,9 @@ function M.fetch_characters_from_source(title, season_num, on_progress, callback
     end
 
     -- try_bangumi: bangumi 数据源获取角色
-    -- v1.6: search_subject_enhanced 可能返回 fankuhub 来源的 subject（bangumi 全部失败时 fallback）。
-    --       此时 subject.id 是 fankuhub 字符串，必须用 fankuhub 兼容接口，否则 bangumi API 会 404。
+    -- v1.6: search_subject_enhanced 可能返回非 bangumi 来源的 subject
+    --       （bangumi 全部失败时走了多源兜底）。此时 subject.id 不是数字 id，
+    --       必须用该源自己的兼容接口，否则 bangumi API 会 404。
     local function try_bangumi(server_url, on_fail)
         if not check_path() then return end
         if not server_url or server_url == "" then
@@ -749,18 +723,12 @@ function M.fetch_characters_from_source(title, season_num, on_progress, callback
             end
 
             -- 根据 subject 来源选择数据接口
-            -- v1.6: 支持多数据源（fankuhub/anilist/mal/baike）的兼容接口
+            -- v1.6: 支持多数据源（anilist/mal/baike）的兼容接口
+            -- 2026-10-07: 移除 fankuhub 分支（不再使用该数据源）
             local source = subject._source or "bangumi"
             local get_chars_fn, get_persons_fn, get_chars_arg, get_persons_arg
 
-            if source == "fankuhub" and deps.fankuhub
-               and type(deps.fankuhub.get_subject_characters_compatible) == "function"
-               and type(deps.fankuhub.get_subject_persons_compatible) == "function" then
-                get_chars_fn = deps.fankuhub.get_subject_characters_compatible
-                get_persons_fn = deps.fankuhub.get_subject_persons_compatible
-                get_chars_arg = subject.id
-                get_persons_arg = subject.id
-            elseif source == "anilist" and deps.anilist
+            if source == "anilist" and deps.anilist
                and type(deps.anilist.get_subject_characters_compatible) == "function"
                and type(deps.anilist.get_subject_persons_compatible) == "function" then
                 get_chars_fn = deps.anilist.get_subject_characters_compatible
@@ -858,71 +826,21 @@ function M.fetch_characters_from_source(title, season_num, on_progress, callback
         end, on_progress, skip_extra)
     end
 
-    -- try_fankuhub: fankuhub 数据源（一次请求返回角色+声优+图片）
-    local function try_fankuhub(on_fail)
-        if not check_path() then return end
-        if not deps.fankuhub or type(deps.fankuhub.search) ~= "function" then
-            on_fail()
-            return
-        end
-        deps.fankuhub.search(title, function(success, results, err_info)
-            if not check_path() then return end
-            if not success or not results or #results == 0 then
-                on_fail()
-                return
-            end
-            -- 选择最佳匹配结果
-            local best = results[1]
-            if deps.guess and type(deps.guess.best_match_by_jw) == "function" then
-                local names = {}
-                for _, r in ipairs(results) do
-                    table.insert(names, r.name_cn or r.name or "")
-                end
-                local matched = deps.guess.best_match_by_jw(names, title, 0.6)
-                if matched then
-                    for _, r in ipairs(results) do
-                        if (r.name_cn or r.name) == matched then best = r break end
-                    end
-                end
-            end
-            local chars = best.characters or {}
-            if #chars == 0 then
-                -- search 端点未返回角色 → 交由 on_fail 回退（遍历下一源 / 快速路径 fallback）
-                on_fail()
-                return
-            end
-            finish_success(chars, {}, "fankuhub")
-        end)
-    end
-
     -- ============ 数据源分发 ============
-    -- v1.9.1: 与职员表保持一致 —— 角色获取优先尝试 fankuhub.search
-    --         （一次请求返回角色+声优+图片，且 search 端点已确认包含 characters 字段）
-    --         fankuhub 不可用或无角色时，回退到原有 bangumi / 多源分发逻辑。
-    --         修复：此前 fankuhub 快速路径仅在 active_sources 含 fankuhub 时触发，
-    --               实际配置下角色走 bangumi /characters 端点经常空结果，
-    --               而职员表因 v1.9.1 已优先走 fankuhub 故正常 —— 导致
-    --               「职员表能找到、角色介绍找不到」的不对称。
+    -- 2026-10-07: 移除 fankuhub 优先快速路径与 data_source 配置项（用户决定不再使用该数据源）。
+    --   原先 v1.9.1 让角色获取**优先**试 fankuhub.search（一次请求返回角色+声优+图片），
+    --   失败才回退到 bangumi / 多源分发。移除后一律走 dispatch_fallback：
+    --   按 active_sources 顺序走 bangumi → 多源。
     local active_sources = {}
     if deps.servers and type(deps.servers.get_active_sources) == "function" then
         active_sources = deps.servers.get_active_sources() or {}
     end
 
-    -- 原有分发逻辑（fankuhub 不可用 / 无角色时的兜底）
+    -- 数据源分发（active_sources 为空时直接走 bangumi）
     local function dispatch_fallback()
         if #active_sources == 0 then
-            -- 回退到 opts.data_source 配置
-            local ds = opts.data_source or "auto"
-            if ds == "bangumi" then
-                local servers = deps.servers.get_active_bangumi_servers() or {}
-                try_bangumi(servers[1], finish_all_fail)
-            elseif ds == "fankuhub" then
-                try_fankuhub(finish_all_fail)
-            else
-                -- auto: bangumi（fankuhub 不可用时的降级）
-                local servers = deps.servers.get_active_bangumi_servers() or {}
-                try_bangumi(servers[1], finish_all_fail)
-            end
+            local servers = deps.servers.get_active_bangumi_servers() or {}
+            try_bangumi(servers[1], finish_all_fail)
             return
         end
 
@@ -937,23 +855,11 @@ function M.fetch_characters_from_source(title, season_num, on_progress, callback
             local function on_fail()
                 try_next(index + 1)
             end
-            if source.type == "fankuhub" then
-                try_fankuhub(on_fail)
-            else
-                try_bangumi(source.url, on_fail)
-            end
+            -- 非 bangumi 源（含已移除的 fankuhub）统一走 bangumi 兼容路径：
+            -- try_bangumi 内部会按 subject._source 选择该源自己的兼容接口
+            try_bangumi(source.url, on_fail)
         end
         try_next(1)
-    end
-
-    -- fankuhub 优先（与职员表一致，不依赖 active_sources 配置）
-    if deps.fankuhub and type(deps.fankuhub.search) == "function" then
-        debug_log("fetch_characters_from_source: try fankuhub first (consistent with staff)")
-        try_fankuhub(function()
-            -- fankuhub 无角色 → 回退到 bangumi / 多源分发
-            dispatch_fallback()
-        end)
-        return
     end
 
     dispatch_fallback()

@@ -46,7 +46,7 @@ end
 -- cached: 历史缓存的条目（含 name/name_cn）
 -- entry_path: 进入时路径
 -- v1.6: 缓存条目无有效标题时通过 resolve_cached_title 统一兜底
---       （4 级优先级 + 中文转换，与 BGM 搜索、番库搜索预先填入的中文标题一致流程）
+--       （4 级优先级 + 中文转换，与 BGM 搜索预先填入的中文标题一致流程）
 local function fetch_and_show_from_cache(cached, entry_path)
     if deps.state.search_state.current_path ~= entry_path then return end
 
@@ -83,8 +83,7 @@ local function fetch_and_show_from_cache(cached, entry_path)
                 if deps.notify and type(deps.notify.show_click_hint) == "function" then
                     local src = source_name or "bangumi"
                     local source_label = "Bangumi"
-                    if src == "fankuhub" then source_label = "番库"
-                    elseif src == "anilist" then source_label = "AniList"
+                    if src == "anilist" then source_label = "AniList"
                     elseif src == "mal" then source_label = "MAL"
                     elseif src == "baike" then source_label = "百度百科"
                     end

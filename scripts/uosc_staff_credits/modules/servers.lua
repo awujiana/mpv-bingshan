@@ -21,7 +21,7 @@ local utils_mod = require("modules.utils")
 local io_mod = require("modules.utils.io")
 
 -- 常量
-local SCHEMA_VERSION = 4
+local SCHEMA_VERSION = 5
 local SERVERS_FILE = "~~/staff-credits-servers.json"
 local DEBOUNCE_MS = 0.2  -- 200ms
 
@@ -31,13 +31,6 @@ local PRESET_SERVERS = {
         url = "https://api.bangumi.lol",
         note = "镜像(首选)",
         type = "bangumi",
-        enabled = true,
-        is_official = false,
-    },
-    {
-        url = "https://fankuhub.com",
-        note = "聚合源",
-        type = "fankuhub",
         enabled = true,
         is_official = false,
     },
@@ -103,7 +96,7 @@ local function migrate_v1_to_v2(list)
     return list
 end
 
--- v2 → v3: 补充缺失的预设数据源（如 fankuhub）
+-- v2 → v3: 补充缺失的预设数据源（历史版本曾追加 fankuhub，已于 v5 移除）
 local function migrate_v2_to_v3(list)
     local existing_urls = {}
     for _, srv in ipairs(list) do
@@ -140,6 +133,26 @@ local function migrate_v3_to_v4(list)
     return list
 end
 
+-- v4 → v5: 移除 fankuhub 数据源（2026-10-07，用户决定不再使用）
+--
+-- 为什么必须写迁移：老用户的 ~~/staff-credits-servers.json 里已经存在
+-- type="fankuhub" 的条目（由 v2→v3 迁移追加，或首次运行用预设初始化时写入）。
+-- 光删 PRESET_SERVERS 里的预设**对老用户无效** —— 文件已存在就不会再用预设。
+-- 不清理的话，该条目会继续出现在「网站优先级」菜单里，并在
+-- fetch_characters_from_source 的 active_sources 遍历中被尝试，
+-- 拿 fankuhub 的 URL 去请求 bangumi API，白白失败一次。
+local function migrate_v4_to_v5(list)
+    local kept = {}
+    for _, srv in ipairs(list) do
+        local is_fankuhub = (srv.type == "fankuhub")
+            or (type(srv.url) == "string" and srv.url:find("fankuhub%.com", 1, false) ~= nil)
+        if not is_fankuhub then
+            kept[#kept + 1] = srv
+        end
+    end
+    return kept
+end
+
 -- 迁移入口：根据 from_version 选择迁移链
 local function migrate_schema(list, from_version)
     if from_version < 2 then
@@ -150,6 +163,9 @@ local function migrate_schema(list, from_version)
     end
     if from_version < 4 then
         list = migrate_v3_to_v4(list)
+    end
+    if from_version < 5 then
+        list = migrate_v4_to_v5(list)
     end
     return list
 end

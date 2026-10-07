@@ -2,9 +2,9 @@
 -- 百度百科 API 封装（中文标题与简介兜底数据源）
 -- 接口：https://baike.baidu.com/api/openapi/BaikeLemmaCardApi
 -- 返回结构化 card 数组（中文名/导演/原作/类型等 infobox）+ desc/summary
--- 用途：作为第三个数据源，在 bangumi + fankuhub 均失败时获取中文标题与简介
+-- 用途：作为第三个数据源，在 bangumi 失败时获取中文标题与简介
 -- 限制：
---   - 不返回图片 URL（封面/角色图仍需 bangumi/fankuhub）
+--   - 不返回图片 URL（封面/角色图仍需 bangumi）
 --   - 无角色列表与声优信息
 --   - 无评分机制
 --   - card 字段为 HTML 富文本，需清洗 <a>/<sup> 等标签
