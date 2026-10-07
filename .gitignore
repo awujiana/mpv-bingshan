@@ -22,6 +22,8 @@ staff-credits-history.json
 staff-credits-runtime-config.json
 staff-credits-data-cache.json
 recent.json
+# uosc_danmaku 运行时产物（搜索历史，路径见 search_history_path）
+danmaku-search-history.json
 
 # === 例外：确需纳入版本管理的文件 ===
 # file-browser 收藏夹为用户配置，需保留

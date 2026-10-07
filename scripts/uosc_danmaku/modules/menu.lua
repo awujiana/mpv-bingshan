@@ -3,6 +3,37 @@ local utils = require("mp.utils")
 local unpack = unpack or table.unpack
 
 input_loaded, input = pcall(require, "mp.input")
+
+local input_requested_cbs, input_live_cbs = {}, {}
+
+local function input_open(cb)
+    table.insert(input_requested_cbs, cb)
+    input.get(cb)
+    mp.register_script_message("input-event", function(type, args)
+        local params = utils.parse_json(args or "") or {}
+        local cb
+        if type == "opened" then
+            cb = table.remove(input_requested_cbs, 1)
+            if cb then
+                table.insert(input_live_cbs, cb)
+            end
+        elseif type == "closed" then
+            cb = table.remove(input_live_cbs, 1)
+            if #input_requested_cbs > 0 then
+                return
+            end
+        else
+            cb = input_live_cbs[#input_live_cbs] or input_requested_cbs[#input_requested_cbs]
+        end
+        if cb and cb[type] then
+            local suggestions, completion_start_position = cb[type](unpack(params))
+            if type == "complete" and suggestions then
+                mp.commandv("script-message-to", "console", "complete",
+                            utils.format_json(suggestions), completion_start_position)
+            end
+        end
+    end)
+end
 uosc_available = false
 latest_menu_anime = {}
 local active_request_cancel = nil
@@ -167,9 +198,30 @@ local function make_handle_response(ctx)
 end
 
 -- 打开番剧数据匹配菜单
-function get_animes(query)
+function get_animes(query, filter_note)
     local encoded_query = url_encode(query)
-    local server_metas = get_api_server_list(options.api_server, true)
+    local all_metas = get_api_server_list(options.api_server, true)
+    local server_hint = ""
+    local server_metas = {}
+    if filter_note and filter_note ~= "" then
+        local matched = {}
+        for _, m in ipairs(all_metas) do
+            if m.note and m.note == filter_note then
+                table.insert(matched, m)
+            end
+        end
+        if #matched > 0 then
+            server_metas = { matched[1] }  -- 只取第一个匹配的
+            server_note = "服务器【" .. filter_note .. "】"
+        else
+            show_message("未找到备注为【" .. filter_note .. "】的服务器，将使用全部服务器", 3)
+            msg.info("未找到备注为【" .. filter_note .. "】的服务器，将使用全部服务器")
+            server_metas = all_metas
+        end
+    else
+        server_metas = all_metas
+    end
+
     local servers = {}
     local server_notes = {}
     for _, m in ipairs(server_metas) do
@@ -189,7 +241,7 @@ function get_animes(query)
     local total_count = 0
     request_cancelled = false
 
-    local message = "加载数据中..."
+    local message = server_hint .. "加载数据中..."
     local menu_type = "menu_anime"
     local menu_title = "在此处输入番剧名称"
     local footnote = "使用enter或ctrl+enter进行搜索"
@@ -259,7 +311,7 @@ function get_animes(query)
                 end)
             end
         end
-    end, { concurrency = 5, per_request_timeout = 30 })
+    end, { concurrency = 5, per_request_timeout = 60 })
     active_request_cancel = cancel_fn
     active_request_type = menu_type
 end
@@ -295,10 +347,25 @@ function get_episodes(animeTitle, bangumiId, api_server)
             return
         end
 
+        table.insert(items, {
+            title = "↩️ 返回搜索结果",
+            value = { "script-message-to", mp.get_script_name(), "open-latest-menu-anime", latest_menu_anime },
+            keep_open = false,
+            selectable = true,
+        })
+
         if err then
             local message = "获取数据失败"
             if uosc_available then
-                update_menu_uosc(menu_type, menu_title, message, footnote)
+                table.insert(items, {
+                    title = message,
+                    value = "",
+                    italic = true,
+                    keep_open = true,
+                    selectable = false,
+                    align = "center",
+                })
+                update_menu_uosc(menu_type, menu_title, items, footnote)
             else
                 show_message(message, 3)
             end
@@ -310,20 +377,21 @@ function get_episodes(animeTitle, bangumiId, api_server)
         if not response or not response.bangumi or not response.bangumi.episodes then
             local message = "无结果"
             if uosc_available then
-                update_menu_uosc(menu_type, menu_title, message, footnote)
+                table.insert(items, {
+                    title = message,
+                    value = "",
+                    italic = true,
+                    keep_open = true,
+                    selectable = false,
+                    align = "center",
+                })
+                update_menu_uosc(menu_type, menu_title, items, footnote)
             else
                 show_message(message, 3)
             end
-            msg.info("无结果")
+            msg.info(message)
             return
         end
-
-        table.insert(items, {
-            title = "← 返回搜索结果",
-            value = { "script-message-to", mp.get_script_name(), "open-latest-menu-anime", latest_menu_anime },
-            keep_open = false,
-            selectable = true,
-        })
 
         for _, episode in ipairs(response.bangumi.episodes) do
             table.insert(items, {
@@ -334,6 +402,22 @@ function get_episodes(animeTitle, bangumiId, api_server)
                 keep_open = false,
                 selectable = true,
             })
+        end
+
+        -- ====== 新增：更新 latest_menu_anime ======
+        if latest_menu_anime and latest_menu_anime ~= "" then
+            local menu_table = utils.parse_json(latest_menu_anime)
+            if menu_table and type(menu_table.items) == "table" then
+                for i, back_item in ipairs(menu_table.items) do
+                    if type(back_item.value) == "table" and
+                    back_item.value[5] == bangumiId and back_item.value[6] == api_server then
+                        menu_table.items[i].footnote = mp.get_property("filename")
+                        menu_table.items[i].items = { unpack(items, 2) }
+                        break
+                    end
+                end
+                latest_menu_anime = utils.format_json(menu_table)
+            end
         end
 
         if uosc_available then
@@ -401,7 +485,7 @@ function open_menu_select(menu_items, is_time)
         item_values[i] = v.value
     end
     mp.commandv('script-message-to', 'console', 'disable')
-    input.select({
+    input_open({
         prompt = is_time and '筛选:' or '选择:',
         items = item_titles,
         submit = function(id)
@@ -426,18 +510,54 @@ end
 function open_input_menu_get()
     mp.commandv('script-message-to', 'console', 'disable')
     local title = parse_title()
-    input.get({
+    local history_items = get_search_history()
+
+    local function build_log(select_text)
+        local log = {
+            { text = "【弹幕搜索】", style = "{\\c&H00CCFF&\\b1}" },
+            { text = "提示: 回车进行搜索", style = "{\\c&H999999&}" },
+        }
+        if #history_items > 0 then
+            table.insert(log, { text = "【搜索历史】", style = "{\\c&H00CCFF&\\b1}" })
+            for i, item in ipairs(history_items) do
+                local text = string.format("  [%02d] %s", i, item.keyword)
+                if item.time > 0 then
+                    text = text .. string.format("  [%s]", os.date("%Y/%m/%d %H:%M", item.time))
+                end
+                local style = (tonumber(select_text) == i) and "{\\c&HFFDE7F&\\b1}" or "{\\c&HCCCCCC&}"
+                table.insert(log, { text = text, style = style })
+            end
+            table.insert(log, { text = string.format("提示: 输入【1-%d】可快速重新搜索对应关键词", #history_items), style = "{\\c&H999999&}" })
+        end
+        input.set_log(log)
+    end
+
+    input_open({
         prompt = '番剧名称:',
         default_text = title,
         cursor_position = title and #title + 1,
+        opened = function() build_log() end,
+        edited = function(text)
+            text = text:gsub("^%s*(.-)%s*$", "%1")
+            build_log(text ~= "" and text or nil)
+        end,
         submit = function(text)
+            text = text:gsub("^%s*(.-)%s*$", "%1")
+
+            -- 输入历史编号则替换为对应关键词重搜
+            local num = tonumber(text)
+            if num and history_items[num] then
+                text = history_items[num].keyword
+            end
+
             input.terminate()
             mp.commandv("script-message-to", mp.get_script_name(), "search-anime-event", text)
         end
     })
 end
 
-function open_input_menu_uosc()
+-- 构建搜索菜单 props，供打开与删除后原地刷新复用
+local function build_search_menu_props()
     local items = {}
 
     if DANMAKU.anime and DANMAKU.episode then
@@ -458,7 +578,34 @@ function open_input_menu_uosc()
         selectable = false,
     }
 
-    local menu_props = {
+    -- 首个可选条目承载「回车即搜索识别到的名称」。uosc 打开菜单时会预选中第一个可选条目，
+    -- 且回车优先激活选中项（elements/Menu.lua:1260）；若预选中的是历史条目，回车就会搜到
+    -- 最新一条历史而不是输入框里的名称。输入框内容一旦变化，uosc 会自行清除选中项
+    -- （elements/Menu.lua:1014-1017），因此手动改过内容后回车仍会提交改后的文本。
+    local suggested_title = parse_title()
+    if suggested_title and suggested_title ~= "" then
+        items[#items + 1] = {
+            title = "搜索：" .. suggested_title,
+            value = suggested_title,
+            keep_open = false,
+            selectable = true,
+        }
+    end
+
+    -- 追加搜索历史条目，点击直接重新搜索，条目操作提供单条删除
+    for _, item in ipairs(get_search_history()) do
+        items[#items + 1] = {
+            title = item.keyword,
+            hint = item.time > 0 and os.date("%Y/%m/%d %H:%M", item.time) or nil,
+            icon = "history",
+            value = item.keyword,
+            actions = {{icon = "delete", name = "delete", label = "删除此记录"}},
+            keep_open = false,
+            selectable = true,
+        }
+    end
+
+    return {
         type = "menu_danmaku",
         title = "在此处输入番剧名称",
         search_style = "palette",
@@ -466,9 +613,15 @@ function open_input_menu_uosc()
         search_suggestion = parse_title(),
         on_search = { "script-message-to", mp.get_script_name(), "search-anime-event" },
         footnote = "使用enter或ctrl+enter进行搜索",
-        items = items
+        items = items,
+        -- 条目操作必须配 callback 才会派发：uosc 在未设置 callback 时忽略 event.action
+        item_actions_place = "outside",
+        callback = { mp.get_script_name(), 'setup-danmaku-search-history' },
     }
-    local json_props = utils.format_json(menu_props)
+end
+
+function open_input_menu_uosc()
+    local json_props = utils.format_json(build_search_menu_props())
     mp.commandv("script-message-to", "uosc", "open-menu", json_props)
 end
 
@@ -560,7 +713,7 @@ function open_add_menu_get()
         return hints[action] or "按回车执行，获取输入源地址url的弹幕"
     end
 
-    input.get({
+    input_open({
         keep_open = true,
         prompt = "请在此输入源地址url: ",
         opened = function() show_menu() end,
@@ -606,26 +759,28 @@ function open_add_menu_uosc()
     local sources = {}
     for url, source in pairs(DANMAKU.sources) do
         if source.data then
+            local count = #source.data  -- 弹幕条数
+            local count_text = string.format("（%d条）弹幕", count)
             local item = {title = utf8_sub(url, 1, 100), value = url, keep_open = true,}
             if source.from == "api_server" then
                 if source.blocked then
                     item.hint = "来源：弹幕服务器（已屏蔽）"
-                    item.actions = {{icon = "check", name = "unblock", label = "解除屏蔽"},}
+                    item.actions = {{icon = "check", name = "unblock", label = "解除屏蔽" .. count_text},}
                 else
                     item.hint = "来源：弹幕服务器（未屏蔽）"
-                    item.actions = {{icon = "not_interested", name = "block", label = "屏蔽"},}
+                    item.actions = {{icon = "not_interested", name = "block", label = "屏蔽" .. count_text},}
                 end
             else
                 item.hint = "来源：用户添加"
                 if source.blocked then
                     item.actions = {
-                        {icon = "check", name = "unblock", label = "解除屏蔽"},
-                        {icon = "delete", name = "delete", label = "删除"},
+                        {icon = "check", name = "unblock", label = "解除屏蔽" .. count_text},
+                        {icon = "delete", name = "delete", label = "删除" .. count_text},
                     }
                 else
                     item.actions = {
-                        {icon = "not_interested", name = "block", label = "屏蔽"},
-                        {icon = "delete", name = "delete", label = "删除"},
+                        {icon = "not_interested", name = "block", label = "屏蔽" .. count_text},
+                        {icon = "delete", name = "delete", label = "删除" .. count_text},
                     }
                 end
             end
@@ -819,7 +974,7 @@ function open_style_menu_get(query, indicator)
         input.set_log(menu_log)
     end
 
-    input.get({
+    input_open({
         keep_open = true,
         prompt = "请在此输入操作（w/s|上移/下移）: ",
         opened = function() build_menu() end,
@@ -956,7 +1111,7 @@ function open_delay_from_time_get(source, time, status)
         input.set_log(menu_log)
     end
 
-    input.get({
+    input_open({
         keep_open = true,
         prompt = "请输入要设置的延迟（秒或 XmYs）: ",
         opened = function() build_menu() end,
@@ -1042,7 +1197,7 @@ function open_delay_menu_get(source, status)
             if src.data and not src.blocked then
                 local delay = 0
                 serial = serial + 1
-                select_num = (url == source) and serial or select_num
+                select_num = (serial == tonumber(source)) and serial or select_num
                 if src.delay_segments then
                     for _, seg in ipairs(src.delay_segments) do
                         if seg.start == 0 then
@@ -1093,7 +1248,7 @@ function open_delay_menu_get(source, status)
         input.set_log(menu_log)
     end
 
-    input.get({
+    input_open({
         keep_open = true,
         prompt = "请在此输入操作（w/s|上移/下移）: ",
         opened = function() build_menu() end,
@@ -1241,7 +1396,7 @@ function open_add_total_menu_select()
     end
 
     mp.commandv('script-message-to', 'console', 'disable')
-    input.select({
+    input_open({
         prompt = '选择:',
         items = item_titles,
         submit = function(id)
@@ -1358,6 +1513,7 @@ end)
 
 -- 注册函数给 uosc 按钮使用
 mp.register_script_message("search-anime-event", function(query)
+    record_search_history(query)
     perform_cancel_active_request()
     if uosc_available then
         mp.commandv("script-message-to", "uosc", "close-menu", "menu_danmaku")
@@ -1365,10 +1521,19 @@ mp.register_script_message("search-anime-event", function(query)
     local name, class = query:match("^(.-)%s*|%s*(.-)%s*$")
     if name and class then
         query_extra(name, class)
-    else
-        get_animes(query)
+        return
     end
+    local filter_note = nil
+    local search_name = query
+    local at_pos = query:find("@[^@]*$")
+    if at_pos then
+        search_name = query:sub(1, at_pos-1):gsub("%s+$", "")
+        filter_note = query:sub(at_pos+1):gsub("^%s*(.-)%s*$", "%1")
+        if filter_note == "" then filter_note = nil end
+    end
+    get_animes(search_name, filter_note)
 end)
+
 mp.register_script_message("search-episodes-event", function(animeTitle, bangumiId, api_server)
     perform_cancel_active_request()
     if uosc_available then
@@ -1502,6 +1667,23 @@ mp.register_script_message('setup-danmaku-source', function(json)
             load_danmaku(true)
         end
     end
+end)
+
+-- 搜索菜单事件回调：条目激活复用原有搜索流程，删除操作移除单条历史
+mp.register_script_message('setup-danmaku-search-history', function(json)
+    local event = utils.parse_json(json)
+    if event == nil or event.type ~= 'activate' then return end
+
+    if event.action == 'delete' then
+        if remove_search_history(event.value) then
+            -- 原地刷新菜单，保持菜单打开以便连续删除
+            local json_props = utils.format_json(build_search_menu_props())
+            mp.commandv("script-message-to", "uosc", "update-menu", json_props)
+        end
+        return
+    end
+
+    mp.commandv("script-message-to", mp.get_script_name(), "search-anime-event", event.value)
 end)
 
 mp.register_script_message("setup-source-delay", function(query, text)
