@@ -362,21 +362,6 @@ key script-message clear-source
 </details>
 
 <details>
-<summary>显示当前弹幕数量</summary>
-
-> #### 显示当前弹幕数量（可选）
-
-在视频播放时，把当前已加载的弹幕条数以 OSD 消息形式显示出来；若已匹配到番剧，会一并显示匹配到的番剧名与集数。若当前没有弹幕数据，会提示「comments无数据」而不是报错。
-
-想要通过快捷键使用此功能，请添加类似下面的配置到 `input.conf`中。对应的脚本消息为 `show_danmaku_count`。
-
-```
-key script-message show_danmaku_count
-```
-
-</details>
-
-<details>
 <summary>检查脚本更新</summary>
 
 > #### 检查脚本更新（可选）
@@ -1079,6 +1064,8 @@ title_replace
 
 自定义标题解析中的额外替换规则，内容格式为 JSON 字符串，替换模式为 lua 的 string.gsub 函数
 
+同时支持 JSON 规则文件路径（如 ~~/script-opts/title_replace.json），文件内容格式与示例字符串规则相同
+
 注意⚠️：由于 mpv 的 lua 版本限制，自定义规则只支持形如 %n 的捕获组写法，即示例用法，不支持直接替换字符的写法
 
 用法示例：
@@ -1284,6 +1271,41 @@ blacklist_path=
 - 爱优腾及芒果TV的弹幕解析参考：https://github.com/lyz05/danmaku
 - b站在线播放弹幕获取实现参考：[MPV-Play-BiliBili-Comments](https://github.com/itKelis/MPV-Play-BiliBili-Comments)
 - 巴哈姆特在线播放弹幕获取实现参考：[MPV-Play-BAHA-Comments](https://github.com/s594569321/MPV-Play-BAHA-Comments)
+
+## 对外输出当前匹配结果（本 fork 新增）
+
+上游原版只把匹配结果写进 `danmaku-history.json` 并用 OSD 显示，外部脚本无法
+结构化读取当前番剧。本 fork 在 `show_loaded()` 末尾调用 `broadcast_anime_info()`，
+导出两条通道，二者缺一不可：
+
+**1. user-data 属性**（持久，随时可读）
+
+```text
+user-data/uosc_danmaku/anime-title        番剧名（dandanplay animeTitle，通常中文）
+user-data/uosc_danmaku/anime-episode      集标题，如 第3话
+user-data/uosc_danmaku/anime-episode-id   dandanplay episodeId
+user-data/uosc_danmaku/anime-api-server   实际使用的 API 服务器
+```
+
+**2. script-message**
+
+```lua
+mp.register_script_message("danmaku-anime-info", function(anime, episode, episode_id, api_server, path)
+    -- 空字段为 "-"；path 用于校验消息是否对应当前视频
+end)
+```
+
+设计要点：
+
+- **为什么两条都要**：mpv 按脚本名顺序加载，本脚本早于大部分消费方，只发消息
+  会漏掉首次广播；user-data 是持久状态，天然解决加载顺序。
+- **换片清场**：`file-loaded` 时先 `clear_anime_info()` 再广播，避免外部脚本
+  读到上一部片的标题。
+- **path 校验**：消息带 `path`，接收方比对 `mp.get_property("path")`，
+  防止异步时序下误用陈旧数据。
+
+消费方实现参考：[awujiana/uosc-staff-credits](https://github.com/awujiana/uosc-staff-credits)
+的 `modules/danmaku_link.lua`。
 
 ## 相关项目
 

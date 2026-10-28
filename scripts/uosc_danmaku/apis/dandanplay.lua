@@ -49,6 +49,8 @@ function set_episode_id(input, from_menu, api_server)
     DANMAKU.api_server = selected_server
 
     local episodeId = tonumber(input)
+    -- 记录当前集 ID：broadcast_anime_info 会把它一并输出，外部脚本无需再猜
+    DANMAKU.episode_id = episodeId or input
     write_history(episodeId, selected_server)
     set_danmaku_button()
     fetch_danmaku(episodeId, from_menu, selected_server)

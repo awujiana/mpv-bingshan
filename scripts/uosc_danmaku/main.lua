@@ -15,6 +15,7 @@ require("modules/utils")
 require("modules/parse")
 require("modules/guess")
 require('modules/render')
+require('modules/blacklist')
 require('modules/menu')
 require("modules/update")
 
@@ -41,6 +42,11 @@ DANMAKU_SWITCH_ON = string.format("user-data/%s/danmaku-switch-on", mp.get_scrip
 mp.set_property_bool(DANMAKU_SWITCH_ON, false)
 DANMAKU_COUNT = string.format("user-data/%s/danmaku-count", mp.get_script_name())
 mp.set_property_native(DANMAKU_COUNT, 0)
+-- 对外暴露的匹配结果（供 uosc_staff_credits 等脚本直接复用，见 broadcast_anime_info）
+ANIME_TITLE = string.format("user-data/%s/anime-title", mp.get_script_name())
+ANIME_EPISODE = string.format("user-data/%s/anime-episode", mp.get_script_name())
+ANIME_EPISODE_ID = string.format("user-data/%s/anime-episode-id", mp.get_script_name())
+ANIME_API_SERVER = string.format("user-data/%s/anime-api-server", mp.get_script_name())
 KEY = table_to_zero_indexed({
     0x00,0x01,0x02,0x03,0x04,
     0x05,0x06,0x07,0x08,0x09,
@@ -107,6 +113,45 @@ function set_danmaku_button()
     end
 end
 
+-- 主动对外广播当前匹配的番剧信息。
+--
+-- 为什么需要：本脚本此前只把匹配结果写进 danmaku-history.json 并用 OSD 显示，
+-- 外部脚本拿不到结构化数据，只能读历史文件按路径猜，或用正则去啃 OSD 文本。
+-- 这里提供两条通道，缺一不可：
+--   1. user-data 属性：持久状态，随时可读，不受脚本加载顺序影响
+--      （mpv 按脚本名排序加载，uosc_danmaku 早于 uosc_staff_credits，
+--        纯消息会漏掉首次广播）。
+--   2. script-message：实时通知，省去轮询。
+-- 参数里带 path 是给接收方做新鲜度校验的——换片后旧消息不会被误用。
+function broadcast_anime_info()
+    local anime = DANMAKU.anime or ""
+    local episode = DANMAKU.episode or ""
+    local episode_id = DANMAKU.episode_id and tostring(DANMAKU.episode_id) or ""
+    local api_server = DANMAKU.api_server or ""
+
+    mp.set_property(ANIME_TITLE, anime)
+    mp.set_property(ANIME_EPISODE, episode)
+    mp.set_property(ANIME_EPISODE_ID, episode_id)
+    mp.set_property(ANIME_API_SERVER, api_server)
+
+    if anime == "" then return end
+
+    -- 空字段用 "-" 占位，保证参数位固定（接收方按位置解析）
+    mp.commandv("script-message", "danmaku-anime-info",
+        anime,
+        episode ~= "" and episode or "-",
+        episode_id ~= "" and episode_id or "-",
+        api_server ~= "" and api_server or "-",
+        mp.get_property("path") or "-")
+end
+
+-- 换片时清空匹配结果，避免外部脚本读到上一部片的残留
+function clear_anime_info()
+    DANMAKU.anime, DANMAKU.episode, DANMAKU.episode_id, DANMAKU.api_server =
+        nil, nil, nil, nil
+    broadcast_anime_info()
+end
+
 function show_loaded(init)
     if not COMMENTS then
         show_message("comments无数据", 3)
@@ -122,6 +167,7 @@ function show_loaded(init)
         show_message("弹幕加载成功，共计" .. #COMMENTS .. "条弹幕", 3)
     end
     mp.set_property_native(DANMAKU_COUNT, #COMMENTS)
+    broadcast_anime_info()
 end
 
 -- 获取指定时间的延迟
@@ -696,6 +742,9 @@ mp.register_event("file-loaded", function()
     -- 先读取历史源，确保不满足自动加载条件时仍可手动使用。
     read_danmaku_source_record(path)
 
+    -- 换片先清掉上一部的匹配结果并广播清空，否则外部脚本会读到陈旧标题
+    clear_anime_info()
+
     -- 网络流在 file-loaded 时的 container-fps 可能尚未就绪。
     if not video or video["image"] or video["albumart"] or duration < 60 then
         return
@@ -782,11 +831,8 @@ mp.register_script_message("show_danmaku_keyboard", function()
 end)
 
 mp.register_script_message("auto_load_fallback", function()
-    -- 注意：这里必须用 FALLBACK_TRIGGER（第 35 行声明、render.lua on_unload 里重置）。
-    -- 曾误写成 fallback_triggered —— 那是另一个从未被重置的全局，
-    -- 后果是本进程里只有**第一个**视频能触发自动兜底搜索，之后静默失效。
-    if not FALLBACK_TRIGGER and options.auto_fallback_search and COMMENTS == nil then
-        FALLBACK_TRIGGER = true
+    if not fallback_triggered and options.auto_fallback_search and COMMENTS == nil then
+        fallback_triggered = true
         msg.info("自动加载弹幕失败，自动弹出搜索框")
         mp.commandv("script-message", "open_search_danmaku_menu")
     end
