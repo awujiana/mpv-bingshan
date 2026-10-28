@@ -28,3 +28,9 @@ danmaku-search-history.json
 # === 例外：确需纳入版本管理的文件 ===
 # file-browser 收藏夹为用户配置，需保留
 !script-opts/file_browser_favourites.txt
+
+# === 外部独立仓库维护的脚本（此处只放 clone，不做文件级跟踪）===
+# uosc_danmaku 是独立 fork 仓库（https://github.com/awujiana/uosc_danmaku），
+# 单独 clone 到 scripts/uosc_danmaku，改动只在 fork 仓库提交，避免双份记录。
+# 重装环境时执行：git clone https://github.com/awujiana/uosc_danmaku.git scripts/uosc_danmaku
+scripts/uosc_danmaku/
