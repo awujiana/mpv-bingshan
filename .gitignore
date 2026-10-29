@@ -27,7 +27,7 @@ danmaku-search-history.json
 # uosc_subtitle_style 运行时产物（样式状态、字体缓存、预设缓存）
 uosc-subtitle-style-state.json
 uosc-subtitle-style-fonts.json
-sub-style-preset.json
+uosc-subtitle-style-preset.json
 # uosc_updater 运行时产物（检查状态、GitHub API 响应缓存）
 uosc-updater-state.json
 uosc-updater-remote.json

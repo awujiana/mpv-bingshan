@@ -347,7 +347,7 @@ E2E 有还原断言。
 
 ## 11. 测试体系
 
-### 11.1 单元测试（`tools/sub-style-test.lua`，149 项）
+### 11.1 单元测试（`tools/sub-style-test.lua`，209 项）
 
 自建 stub：`mp`（全局注入，非 `package.loaded`）、`mp.msg/utils/options`、
 可 `seek` 的虚拟文件系统、计时器队列（`flush_timers()` 验证延迟设置）、
@@ -447,3 +447,109 @@ yes|no|true|false / R3 数值项必须能 parse / R4 字符串项值含 `#` 即�
    `uosc-subtitle-style-state.json`（否则上个用例的 force/白字会被带进下个用例）。
 10. **conf 行尾注释**（见 §11.3）：mpv 不支持 `key=value  # 注释`；改 conf 后
     必须跑 `python tools/sub-style-conf-verify.py` + 真机冒烟（grep `error converting`）。
+
+---
+
+## 14. 检测与布局增补（v1.0.3 ~ v1.0.5）
+
+> 本节记录 §10 之后新增的三条链路：**检测重试**、**auto 标记**、**双语布局**，
+> 以及彩色判定的像素阈值演进。§10 讲的是「怎么检测」，本节讲的是「检测失败之后怎么办」。
+
+### 14.1 检测的重试链（v1.0.3）
+
+检测原先只在 `file-loaded` + `inspect_delay`（1.2s）跑一次，字幕没就绪就**永久失败**。修后：
+
+- `run_inspect` 在 `inspect_style` 返 `nil` 时按 `inspect_retry_delay` 重试，上限 `inspect_retries` 次；
+- 观察 `sub-text`：**第一句对白由空转非空即触发检测**（对应需求「按第一句底部对话开始识别」）；
+- `inspect_armed` 门：首检跑过之前观察器不触发。否则会抢在 `inspect_delay` 前就把字幕转黑白，
+  E2E 用例 A/F 的早期截图会红；
+- `inspect_gen` 防切文件时旧链继续跑；`inspect_done` 防每句对白重跑；`reset_style` 后重检；
+  手动 inspect 强制重检（`allow_retry=false`）。
+
+### 14.2 seek 后重新检测（2026-10-27 修复）
+
+**症状**：片头是 OP/ED 没有底部对白时打开，然后 seek 进正片，彩色字幕**不再被替换**。
+
+**根因**：重试额度是**每文件一次性**的。内封字幕走像素采样，字幕未渲染时 `total==0` → 返 `nil`；
+片头 15s 内把额度耗尽后，seek 到正片也**无法再排重试**，一次采样失败就永久放弃。
+（外挂 ASS 走文件解析、不受影响，**只有内封会**。）
+
+**修法**：
+
+- `seek` 事件（0.3s 去抖）在 `not inspect_done and inspect_armed` 时刷新 `inspect_attempts=0` 并 `run_inspect`；
+- `sub-text` 观察器用 `sub_text_was_empty` 识别「空→非空」的新段，同样刷新额度；
+- 新增 `inspect_total` + `INSPECT_TOTAL_CAP=100` 硬上限，防止无界截图；
+- `reset_style` / 手动 inspect 也重置总额度。
+
+**测试陷阱**：测「重试兜底」必须让**第一次采样失败**。把「字幕已渲染」设在 seek 之前，
+首采即成功、根本走不到重试额度 ⇒ 用例无牙（第一版 T47 就这么写的）。
+真实时序是 seek 落地后、字幕**下一帧**才画出来。
+另：`sub-ass-override=force` 在**延迟重建定时器**里才写，断言前须再 `flush_timers()`。
+
+### 14.3 彩色判定的像素路径（v1.0.4 修复细彩描边）
+
+外挂 ASS 直接解析 `Default` 样式与 `[Fonts]` 段；内封只能靠 `screenshot-raw` 双帧差分成色
+（要求 `sub-text` 非空且当前未处于我方 force）。
+
+判定式：
+
+```
+is_colored_hex(主色) or is_colored_hex(真实暗描边)
+  or (accent ≠ 主色 and accent 占比 ≥ colored_outline_min[默认 0.5%])
+```
+
+- **主色或描边色任一饱和即彩色**（白字 + 紫描边 `#481081` 也判为彩色 → 转黑白）；
+- 细彩描边占比常 <2%：实测 `06.mkv` 粉描边 `#ED74CF` 仅 **0.87%**，
+  旧的 2% 阈值把它漏判成「非彩色、保持原样」。阈值因此降到 0.5% 且可配；
+- `outline_from_accent` 守卫：防止抗锯齿 fringe 被当成描边色而误判；
+- 报告新增「饱和 `#xxxxxx`」一行，便于现场核对判定依据；
+- **仅彩色才套用预设**，白字保持原样；**双语默认不改颜色**——
+  `has_secondary_track() and preset.skip_dual` 时跳过并在报告里说明原因。
+  该开关三路可达：`preset-toggle-dual` 消息 / 菜单项 / conf `preset_skip_dual`。
+
+报告用 `flash_tl` 显示在左上角，时长 `report_ms`（6s）；实现上是临时改 `osd-align`，
+**用完必须还原**。
+
+### 14.4 `auto` 标记：防跨文件串台
+
+轨上加 `auto` 标记，语义是「这条轨的样式是脚本自己套的」：
+
+| 动作 | `auto` |
+|---|---|
+| 彩色检测自动套用 | `true` |
+| 用户手动改样式 | `false` |
+
+`file-loaded` 时先 `clear_auto_style` 清掉带 `auto` 的轨，再 `apply_all` ⇒ 新文件从**原样**起，
+这也保证内封轨的像素检测能看到影片原配色。用户手动设过的样式不带 `auto`，仍跨文件持久。
+
+### 14.5 中日双语布局 `dual_layout`（默认开）
+
+- `compute_layout()` 识别「一条中文 + 一条日文」：内封读 `track-list.lang`；
+  **外挂轨的 `lang` 恒为 `nil`**，只能从文件名猜（`.chi.` / `.jpn.` / `.sc.` / `（JP）` / `（CHS）`）；
+- 布局：日轨置底（`pos=100`）并 ×`dual_layout_scale`（0.8），中轨放它上方（`100 - pos_min_gap`）；
+- 结果写进 per-file 覆盖层 `layout`：**不写状态文件、不跨文件泄漏**；
+  `set_pos` / `set_scale` / `adopt_external` 都把 `layout` 置 `nil`（用户一动手就退出自动布局）；
+- 与颜色预设**正交**（一个管位置缩放，一个管颜色）；
+- **`\pos` 注释幕对 `sub-scale` 豁免**：scale 1→0.4 时对白行高 30→11，而 `\pos` 注释行恒定 30。
+
+### 14.6 E2E 视觉尺子军规
+
+- 截图前先 `show-text ''`，否则 OSD 残留会污染判据；
+- 按 y 区间找字幕带：排除顶栏 `y<40` 与底栏 `y>348`；
+- **每个用例前删 `uosc-subtitle-style-state.json`**：`persist=true` 会跨进程继承，
+  上个用例的 force/白字会被带进下个用例；
+- 双语用例（E）必须加 `dual-track-present` 断言，否则「没找到第二轨」也会静默通过；
+- 视觉判据用**同 fixture 差分**：单轨 A 变白 vs 双轨 E 保持黄。
+
+### 14.7 仓库与发布
+
+- 独立仓库 <https://github.com/awujiana/uosc_subtitle_style>（AGPL-3.0，v1.0.0 → v1.0.5；
+  v1.0.5 起仓库根带 `version.json` 标准清单）。仓库 = `scripts` + `script-opts` + `docs` + `tools`。
+- 安装 = 把 `scripts/uosc_subtitle_style.lua` 拖进 mpv 配置目录的 `scripts/`
+  （别套成 `scripts/scripts/`），conf 放 `script-opts/`。
+- **自 v1.0.5 起 Release 不打包 zip**：直接上传 `uosc_subtitle_style.lua` +
+  `uosc_subtitle_style.conf` 两个文件；`version.json` 只留在仓库根，不作为 Release 资产。
+- **跨仓库同步前先 diff 基线**：主项目 ↔ 独立仓库的 script/test/fixture 同源可整文件覆盖，
+  但 e2e 是**仓库模式变体**（仓库版 `--config-dir=ROOT`，主项目版是用户配置模式），
+  直接 `cp` 会悄悄毁掉仓库模式。做法：`git checkout HEAD -- <file>` 恢复仓库版，
+  再按仓库版重打（fixture 路径用 `ROOT` 而非 `PORTABLE`），改完 `cmp` 逐个校验。
