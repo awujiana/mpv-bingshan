@@ -24,6 +24,10 @@ staff-credits-data-cache.json
 recent.json
 # uosc_danmaku 运行时产物（搜索历史，路径见 search_history_path）
 danmaku-search-history.json
+# uosc_subtitle_style 运行时产物（样式状态、字体缓存、预设缓存）
+uosc-subtitle-style-state.json
+uosc-subtitle-style-fonts.json
+sub-style-preset.json
 
 # === 例外：确需纳入版本管理的文件 ===
 # file-browser 收藏夹为用户配置，需保留

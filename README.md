@@ -106,6 +106,107 @@ PS：自行编辑配置文件时，注意编码格式应为 UTF-8，换行符为
   且有 17 个本地脚本根本不在 wiki 中。
 - **本 README 的核对内容即为差异清单**，后续新增/升级脚本时请同步更新本节。
 
+### 内封字幕样式切换（scripts/uosc_subtitle_style.lua，主/次字幕分轨）
+
+把字幕在 **原位 / 中下 / 中部 / 中上 / 顶部** 之间切换，可整体缩放、改字体、字号、粗体、
+**描边粗细与描边颜色**；**主字幕（sid）与次字幕（secondary-sid）分轨独立调整**，
+且两轨位置自动避让、**永不重叠**。载入时自动**检测字幕样式**（主色/描边色/字体/内封字体），
+在**左上角输出报告**，并可**只在彩色字幕时自动套用可修改、可缓存的预设样式**；
+**双语字幕（双轨）默认不改颜色**。界面直接用 uosc 的菜单。
+
+> 架构细节（数据模型、mpv 能力矩阵、应用引擎、字体枚举、测试体系）见
+> [`docs/uosc-subtitle-style-architecture.md`](docs/uosc-subtitle-style-architecture.md)。
+
+**入口**
+- uosc 工具栏：字幕按钮左侧的「字幕样式」按钮（`script-opts/uosc.conf` 的 `controls=`，
+  `<has_sub>command:tune:script-message-to uosc_subtitle_style open-menu?字幕样式`）
+- 键盘：`ALT+Q`（input.conf 字幕区）
+- 消息：`open-menu | cycle | target <main|sec> | pos <0-150> | scale <倍率> |
+  nudge <±%> | font <字体名|reset> | size <像素值|reset> | bold <on|off|reset> |
+  outline <粗细|reset> | outline-color <#RRGGBB|reset> | color <#RRGGBB|reset> |
+  style-preset <big-bold|original|sync-other> | open-fonts | rescan-fonts | reset | fix-override |
+  preset-apply | preset-save | preset-reset | preset-toggle-colored | preset-toggle-dual |
+  preset-toggle-enabled | inspect`
+
+**编辑目标制**：菜单顶部切换「主字幕 / 次字幕」，位置/缩放/字体/字号只对**当前目标轨**生效；
+另一轨恢复字幕原样（其预设仍被记忆，切回即恢复）。两轨样式值相同时一起生效。
+无次字幕轨时目标固定为主字幕，切换项置灰。
+
+**分轨能力矩阵**（ASS 内封字幕，mpv v0.41 源码 + 本机实测）
+
+| 项目 | 主/次独立 | 实现通道 |
+| --- | --- | --- |
+| 位置 / 缩放 | ✅ 完全独立 | `sub-pos/scale` 与 `secondary-sub-pos/scale`；两轨自动避让不重叠 |
+| 字体 / 字号 / 描边 | ✅ 仅目标轨 | `sub-ass-override=force` + `sub-font`/`sub-font-size`/`sub-outline-size`/`sub-outline-color`（force 的选择性覆盖位只作用于该轨） |
+| 粗体 | ⚠ 共享 | `sub-ass-style-overrides` 列表 `Bold=`（列表是解码器级共享，mpv 无分轨粗体通道） |
+
+- **位置默认与不重叠**：沿用 mpv 原生默认（主 100 底部 / 次 0 顶部，天然不重叠），
+  脚本启动时读当前值而非硬编码；只有你通过菜单设过位置才回写（归属权模型）。
+  设目标轨位置时若与另一轨过近，另一轨自动让位一档（OSD 提示「次字幕已避让至 X%」）。
+  用 mpv 自己的 `R`/`T` 键改过位置也会被脚本采纳，不会被下次编辑覆盖。
+
+- 位置实测表（640x360）：`pos=5`→贴顶 y9-33 / `25`→中上 y52-77 / `50`→中部 y136-161 /
+  `75`→中下 y220-244 / `100`→原位 y304-328。带 `\pos` 的 signs/特效幕不随 sub-pos 移动。
+- 字体/字号走 force 的副带效果：该轨**对白幕**同时按 `--sub-*` 配色渲染（signs 因 explicit 豁免）。
+- 字号单位是「720p 等效像素」（与 `--sub-font-size` 同语义），mpv 会按字幕脚本的 PlayResY 换算。
+- 图形字幕（PGS/VOBSUB）不走 libass，位置/缩放/样式均不可调，菜单与 OSD 会提示。
+
+**本机字体选择器**
+- 菜单「字体 → 选择本机字体…」打开选择器：中文字体（含「中」字字形）与其他字体分组，
+  支持菜单内搜索；选中即对目标轨生效。字体目录增减后点「重新扫描本机字体」。
+- 枚举为本项目**纯 Lua 实现**（sfnt/TTC 区间读取 name 表族名 + cmap 检测 U+4E2D），
+  懒加载，结果缓存于 `~~/uosc-subtitle-style-fonts.json`（以字体文件数+总字节为签名，变化自动重扫）。
+- 已知边界：TTC 内各字体的表目录偏移是相对**文件头**的绝对偏移（不是字体基址）；
+  cmap 子表解析必须带子表偏移（msyh 的 format 4 子表在 off=28）。
+
+**及时反馈与「不打断字幕流」**
+- 位置/缩放改动**即时生效**（mpv 默认键位同路径，无重建）。
+- 字体/字号/描边：**稳态编辑零重建**——写属性后发一次 OSD 微扰让 `configure_ass` 重跑，
+  实测 **0.2s 内**画面更新（旧实现靠重建解码器，会打断内封字幕的包流，
+  表现为「字幕定住在一句」，已修复并加了回归测试）。
+- 只有「进入/退出 force 模式」（每个文件首次改样式）需要一次重建；粗体因 mpv 无实时
+  粗体通道，改粗体时也会重建一次。
+- 所有修改自动保存到 `~~/uosc-subtitle-style-state.json`（{main,sec,target} 分轨记忆），
+  每个文件加载后自动重新应用（`mpv.conf` 的 `reset-on-next-file` 会重置这些属性）。
+
+**内封字体检查与预设样式**（载入时自动，也可手动「重新检测」）
+- **检测**：外挂字幕直接解析 ASS 文件（[V4+ Styles] 的 Default 样式 + [Fonts] 段内封字体）；
+  内封字幕用 `screenshot-raw` 双帧差分做像素采样（取最多亮色为主色、最多暗色为描边色）。
+  结果以**三行报告显示在左上角**：`来源：主色 #RRGGBB · 描边 #RRGGBB` / `字体 · 字号 · 内封字体 N 个` /
+  `已套用预设样式（…）` 或 `非彩色字幕，保持原样`。报告用 `show-text` 临时置于左上角，6s 后自动消失。
+- **预设样式**：`color`（主色）/`outline-color`（描边色）/`outline`（粗细）/字体/字号/粗体
+  可存为预设（「把当前样式存为预设」或 `preset-save` 消息），缓存于 `~~/uosc-subtitle-style-preset.json`，
+  重启后仍生效；「恢复出厂预设」回到 `script-opts/uosc_subtitle_style.conf` 的 `preset_*` 默认值。
+- **仅彩色才套用**：判定为「彩色」的阈值是主色饱和度 `max-min(RGB) ≥ colored_threshold`（默认 40）。
+  白/灰/黑字幕**保持原样不套用**；不想自动套用可关「载入时自动套用」开关（只报告不修改）。
+- **双语字幕（双轨）默认不改颜色**：检测到次字幕轨（`secondary-sid`）时直接跳过套用——
+  两条轨往往已各有配色，强行统一反而破坏双语可读性（报告第三行会说明
+  `双语字幕（双轨），保持原样不改颜色`）。菜单「双语字幕保持原样」开关或 conf 的
+  `preset_skip_dual=no` 可改回「双语也套用」；手动 `preset-apply`/「套用预设样式」始终可用。
+- **配置文件**：`script-opts/uosc_subtitle_style.conf` 带中文注释，覆盖上述全部行为
+  （阈值 `colored_threshold`、检测时机 `inspect_delay`、报告时长 `report_ms`、
+  避让间距 `pos_min_gap`、force 重建延迟 `rebuild_delay`、预设各项 `preset_*` 等）。
+- 已知边界：像素采样要求字幕正在显示且未处于我方 force 配色；带 `\pos` 的 signs 不参与采样。
+
+**测试**
+- `../luajit.exe tools/sub-style-test.lua` —— 149 项单测（含字体解析器合成 sfnt/TTC 字节流、
+  位置避让、稳态编辑不重建、ASS 解析/像素采样/饱和度阈值、预设读写与开关、
+  双语跳过与开关、避让间距/报告时长可配、菜单项）
+- `python tools/sub-style-conf-verify.py` —— conf 静态门禁：按 mpv 解析语义复算
+  `script-opts/uosc_subtitle_style.conf`（键集合与脚本 o 表对齐、布尔/数值/颜色格式、
+  **行尾注释检测**——mpv 不支持 `key=value  # 注释`，会被整段吃进值里）
+- `/c/Python314/python.exe tools/sub-style-e2e.py` —— 真机 E2E 三阶段：
+  ① 双字幕轨探针 25 断言 + 视觉波段判据（分轨位置/字体/字号互不影响）；
+  ② 字幕流连续性回归（多句 fixture，编辑后逐句校验仍正常跳句）；
+  ③ 预设样式五用例：A 彩色→套用 / B 白色→保持原样 / C 修改并保存缓存 /
+    D 重启读缓存 / E 双语双轨→不套用（与 A 同 fixture 差分），
+    含左上角报告出现与字幕变色的像素判据
+- 探针 `tools/sub-style-probe.lua` / `sub-style-probe-stream.lua` /
+  `sub-style-probe-preset.lua` / `sub-style-probe-preset-save.lua`；
+  fixture `tools/sub-style-smoke{,-sec,-multi,-colored}.ass`
+- ⚠ E2E 视觉判据依赖 Pillow：PATH 里的 managed python 未装，请用系统 Python
+  （`C:\Python314\python.exe`，已装 Pillow）运行；缺 PIL 时脚本会明确退出而非崩溃。
+
 ### 预览
 
  ![image-20231103224421000](https://cdn.jsdelivr.net/gh/dyphire/PicGo/img/2023/11/03/image-20231103224421000.png)

@@ -17,7 +17,9 @@ for s, r in routes:
 registered = {}
 for path in glob.glob('scripts/**/*.lua', recursive=True):
     src = open(path, encoding='utf-8', errors='ignore').read()
-    for mm in re.finditer(r'register_script_message\(\s*"([^"]+)"', src):
+    # 2026-10-20 修：初版只匹配双引号，单引号注册（如 scripts/uosc_subtitle_style.lua）
+    # 全部看不见 → 新脚本的路由被误报「未注册」。两种引号都要认。
+    for mm in re.finditer(r'register_script_message\(\s*[\'"]([^\'"]+)[\'"]', src):
         registered.setdefault(mm.group(1), path)
 
 print("\n核验:")

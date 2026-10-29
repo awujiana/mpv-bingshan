@@ -37,7 +37,11 @@ import glob
 import sys
 
 SCRIPT_GLOB = 'scripts/**/*.lua'
-OWN_PREFIX = 'scripts/uosc_staff_credits/'      # 本项目自己的脚本
+# 本项目自己的脚本（新增自己的脚本时要加进来，否则它的路由会被降级成 INFO）
+# 2026-10-20：纳入 scripts/uosc_subtitle_style.lua（内封字幕样式切换）
+OWN_PREFIXES = ('scripts/uosc_staff_credits/',
+                'scripts/uosc_danmaku/',
+                'scripts/uosc_subtitle_style.lua')
 
 PAT_INLINE = re.compile(r'script-message-to\s+([A-Za-z0-9_.\-]+)\s+([A-Za-z0-9_\-]+)')
 PAT_CONCAT = re.compile(r'"script-message-to\s*"\s*\.\.[^"\n]*?\s*"\s*([A-Za-z0-9_\-]+)')
@@ -87,7 +91,9 @@ for path in sorted(glob.glob(SCRIPT_GLOB, recursive=True)):
     src = strip_comments(raw)
     norm = path.replace('\\', '/')
 
-    for mm in re.finditer(r'register_script_message\(\s*"([^"]+)"', src):
+    # 2026-10-20 修：初版只匹配双引号，单引号注册（如 scripts/uosc_subtitle_style.lua）
+    # 全部看不见 → 本项目路由被降级成第三方 INFO。两种引号都要认。
+    for mm in re.finditer(r'register_script_message\(\s*[\'"]([^\'"]+)[\'"]', src):
         registered.setdefault(mm.group(1), norm)
 
     for pat in (PAT_INLINE, PAT_CONCAT):
@@ -104,7 +110,7 @@ for route in sorted(senders):
     if route in registered:
         continue
     where = senders[route][0]
-    if where[0].startswith(OWN_PREFIX):
+    if where[0].startswith(OWN_PREFIXES):
         own_bad.append(route)
         print("  [FAIL] %-40s ← %s:%d  **本项目发出但无注册，点了不会有反应**"
               % (route, where[0], where[1]))
