@@ -1,0 +1,8 @@
+[submodule "scripts/uosc_danmaku"]
+	path = scripts/uosc_danmaku
+	url = https://github.com/awujiana/uosc_danmaku.git
+	branch = main
+[submodule "scripts/uosc_staff_credits"]
+	path = scripts/uosc_staff_credits
+	url = https://github.com/awujiana/uosc-staff-credits.git
+	branch = main

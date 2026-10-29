@@ -63,6 +63,13 @@
 
 > 这里只做**快进**，不做强制对齐。所以即使你在这个目录里开发、有未推送的提交，
 > 自动更新也不会把它们冲掉——最多是「跳过」并在日志里说明原因。
+>
+> 该目录以 **git submodule** 形式纳入整合包（见 `.gitmodules`）。子模块内部仍是完整的
+> git 工作副本，所以 `git -C <dir>` 的 fetch / 比对 / reset 全部照常工作；唯一的区别是：
+> 自更新把子模块推进到新提交后，**父仓库会显示 `modified: scripts/uosc_staff_credits (new commits)`**。
+> 这是正常现象，但需要在父仓库里 `git add scripts/uosc_staff_credits` 并提交一次，
+> 把父仓库记录的指向更新掉——否则别人（或你自己）执行 `git submodule update`
+> 时会被拉回旧提交。
 
 ---
 

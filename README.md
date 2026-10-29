@@ -226,6 +226,9 @@ PS：自行编辑配置文件时，注意编码格式应为 UTF-8，换行符为
 - git 组件**只做快进**：工作区有未提交改动、或本地有额外提交时一律跳过，不会冲掉你的改动。
 - 更新落盘后**下次启动 mpv 生效**——mpv 没有卸载/热重载脚本的能力，强行加载第二份会造成重复注册。
 - 状态记录命中时**不重复下载**那 100 KB 的脚本。
+- `uosc_danmaku` 与 `uosc_staff_credits` 以 **git submodule** 形式纳入本仓库（见 `.gitmodules`）：
+  克隆请用 `git clone --recursive`，已克隆过的补 `git submodule update --init --recursive`。
+  自更新推进子模块后父仓库会显示 submodule 变更，需在父仓库提交一次指向。
 
 **配置**（`script-opts/uosc_updater.conf`）：`enabled` / `startup_delay` / `interval_hours` /
 `notify` / `update_subtitle_style` / `update_staff_credits` / `git_path` / `api_base`。
