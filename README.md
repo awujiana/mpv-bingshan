@@ -207,6 +207,41 @@ PS：自行编辑配置文件时，注意编码格式应为 UTF-8，换行符为
 - ⚠ E2E 视觉判据依赖 Pillow：PATH 里的 managed python 未装，请用系统 Python
   （`C:\Python314\python.exe`，已装 Pillow）运行；缺 PIL 时脚本会明确退出而非崩溃。
 
+### 脚本自更新（scripts/uosc_updater.lua）
+
+`uosc_subtitle_style` 与 `uosc_staff_credits` 会自动检查各自的 GitHub 上游，
+有新版就**静默下载替换，下次启动 mpv 生效**——不用手动下载、不用解压覆盖。
+
+| 组件 | 形态 | 上游 | 更新方式 |
+| --- | --- | --- | --- |
+| `uosc_subtitle_style` | 单文件 `scripts/uosc_subtitle_style.lua` | `awujiana/uosc_subtitle_style` | 跟 Release 最新资产，下载后覆盖单文件 |
+| `uosc_staff_credits` | 目录 `scripts/uosc_staff_credits/`（git 工作副本） | `awujiana/uosc-staff-credits` | `git fetch` + **仅快进** |
+
+> 架构与安全设计（为什么必须做成独立脚本、两套更新策略、七项安全措施、
+> 故障排查表、测试体系）见 [`docs/uosc-updater.md`](docs/uosc-updater.md)。
+
+**行为要点**
+- 启动后 30 秒首查，之后每 6 小时一次；网络与 git 调用全部异步，**不阻塞播放**。
+- **不保留 `.bak` 备份**，也不留任何临时文件；替换失败自动回滚，原文件完好。
+- git 组件**只做快进**：工作区有未提交改动、或本地有额外提交时一律跳过，不会冲掉你的改动。
+- 更新落盘后**下次启动 mpv 生效**——mpv 没有卸载/热重载脚本的能力，强行加载第二份会造成重复注册。
+- 状态记录命中时**不重复下载**那 100 KB 的脚本。
+
+**配置**（`script-opts/uosc_updater.conf`）：`enabled` / `startup_delay` / `interval_hours` /
+`notify` / `update_subtitle_style` / `update_staff_credits` / `git_path` / `api_base`。
+默认全部开启，无需配置。
+
+**手动触发**
+- `script-message uosc-updater-check` —— 立即检查并用 OSD 汇总结果
+- `script-message uosc-updater-status` —— 显示上次检查时间与记录的版本（不联网）
+
+**测试**
+```bash
+../luajit.exe tools/updater-test.lua                    # 单测 39 条
+/c/Python314/python.exe tools/updater-e2e.py            # 真机 E2E 14 条（隔离 config-dir）
+/c/Python314/python.exe tools/updater-mutation-test.py  # 7 个变异，须 ALL_KILLED
+```
+
 ### 预览
 
  ![image-20231103224421000](https://cdn.jsdelivr.net/gh/dyphire/PicGo/img/2023/11/03/image-20231103224421000.png)

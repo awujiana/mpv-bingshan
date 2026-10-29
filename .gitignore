@@ -28,6 +28,12 @@ danmaku-search-history.json
 uosc-subtitle-style-state.json
 uosc-subtitle-style-fonts.json
 sub-style-preset.json
+# uosc_updater 运行时产物（检查状态、GitHub API 响应缓存）
+uosc-updater-state.json
+uosc-updater-remote.json
+# uosc_subtitle_style 更新时的暂存/中转文件（正常路径不会残留，防止异常中断后误提交）
+*.lua.new
+*.lua.tmpbak
 
 # === 例外：确需纳入版本管理的文件 ===
 # file-browser 收藏夹为用户配置，需保留
