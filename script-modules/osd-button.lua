@@ -424,8 +424,11 @@ function Button:_render()
     end
 
     -- 描边（可选，悬停时出现）
+    -- 只画轮廓：填充必须透明(\1a&HFF&)。早期用 \1c 填成边框色，等于在 fill 之后
+    -- 又盖一个实心矩形——chapterskip 的 border_color=FFFFFF 时会把红色进度填充
+    -- 整块盖掉，倒计时进度看不见（按钮呈纯白）。solid 模式下同样会用 border 色盖掉 bg。
     if c.border and layout.border > 0 then
-        ass:append("{\\bord0\\1c&H" .. c.border .. "&\\bord" .. layout.border
+        ass:append("{\\bord0\\1a&HFF&\\bord" .. layout.border
                    .. "\\3c&H" .. c.border .. "&}")
         ass:draw_start()
         ass:round_rect_cw(x0, y0, x1, y1, rad)
@@ -480,6 +483,15 @@ end
 -- 供外部查询当前是否命中（不重算）
 function Button:is_hovered()
     return self._visible and self._enabled and self._hover
+end
+
+-- 供外部查询当前是否可见（chapterskip 等直接读它，避免在脚本侧重复维护可见性标志）。
+-- 注意：Button 内部用私有字段 self._visible 记录可见性（show/hide 写入），
+-- 此前漏掉了这个方法，导致 chapterskip 调用 prompt_button:is_visible() 时
+-- 触发 "attempt to call method 'is_visible' (a nil value)"，show_button 直接崩溃、
+-- 跳过按钮永远画不出来。
+function Button:is_visible()
+    return self._visible and not self._destroyed
 end
 
 -- 外部点击入口：返回 true 表示本次点击被本按钮消费
