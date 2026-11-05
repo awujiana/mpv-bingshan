@@ -34,7 +34,7 @@
 # ⚠ 视觉判据依赖 Pillow：PATH 里的 managed python 未装 Pillow，本机请用
 #   系统 Python（C:\Python314\python.exe，已装 Pillow 12.x）运行；缺 PIL 时
 #   本脚本会以 exit 2 明确退出，而不是崩在 traceback 里。
-import atexit, os, re, shutil, subprocess, sys, tempfile
+import os, re, shutil, subprocess, sys, tempfile
 
 try:
     import PIL  # noqa: F401
@@ -66,30 +66,6 @@ def run_mpv(args, **kwargs):
     """在真正启动 mpv 前注入 CONFIG_ARGS，统一 cwd 为 mpv.exe 所在目录。"""
     return subprocess.run([args[0]] + CONFIG_ARGS + args[1:],
                           cwd=MPV_DIR, **kwargs)
-
-
-def remove_tree(path):
-    """逐文件清理临时复制的 uosc。
-
-    不用 shutil.rmtree：部分托管 Python 环境会拦截批量删除（atexit 里抛
-    SystemExit 污染 E2E 日志末尾，虽然汇总行仍为 PASS）。这里只删本脚本
-    自己复制进去的目录，且任何一项失败都忽略，不影响门禁结论。
-    """
-    for root, dirs, files in os.walk(path, topdown=False):
-        for name in files:
-            try:
-                os.unlink(os.path.join(root, name))
-            except OSError:
-                pass
-        for name in dirs:
-            try:
-                os.rmdir(os.path.join(root, name))
-            except OSError:
-                pass
-    try:
-        os.rmdir(path)
-    except OSError:
-        pass
 
 
 PROBE = os.path.join(PORTABLE, 'tools', 'sub-style-probe.lua')
@@ -153,14 +129,18 @@ def main():
     if not uosc_present and STANDALONE:
         # 独立仓库不内置 uosc（第三方 LGPL 项目）：从 UOSC_MAIN 或 mpv 目录的
         # portable_config 复制一份，让字体选择器断言照常参与实测而非悄悄 SKIP。
+        # 副本保留在 scripts/uosc/（.gitignore 已排除），后续 E2E 直接复用：
+        # 不做退出时删除 —— 部分托管 Python 会拦截 shutil.rmtree / os.unlink 的
+        # 批量删除，在 atexit 里抛 SystemExit 污染 E2E 日志末尾。副本不会进提交，
+        # 也不随 git 源码分发（Release / 克隆得到的仓库里没有这个目录）。
         source = os.environ.get('UOSC_MAIN') or os.path.join(
             MPV_DIR, 'portable_config', 'scripts', 'uosc', 'main.lua')
         if os.path.exists(source):
             uosc_dir = os.path.dirname(uosc_main)
             shutil.copytree(os.path.dirname(source), uosc_dir, dirs_exist_ok=True)
-            atexit.register(remove_tree, uosc_dir)
             uosc_present = os.path.exists(uosc_main)
-            print('uosc: %s → %s（临时复制，退出即清理）' % (source, uosc_dir))
+            print('uosc: %s → %s（测试副本，.gitignore 已排除，后续复用）'
+                  % (source, uosc_dir))
     if uosc_present:
         env['SUBSTYLE_UOSC'] = '1'
         print('uosc: %s（字体选择器断言强制）' % uosc_main)
