@@ -21,6 +21,9 @@ local STAFF_PREFIX = 'uosc_staff_credits'
 local STAFF_RESP = STAFF_PREFIX .. '-api-response'
 local STAFF_STATE_KEY = 'user-data/' .. STAFF_PREFIX .. '/state'
 local STAFF_VERSION_KEY = 'user-data/' .. STAFF_PREFIX .. '/version'
+-- 独立公开仓库只带 uosc_subtitle_style，没有职员表脚本；E2E 会置 0，
+-- 此时整组职员表断言不参与（不是记 SKIP，也不是伪造 PASS）。
+local STAFF_ENABLED = os.getenv('SUBSTYLE_STAFF_API') ~= '0'
 local SELF = mp.get_script_name() or 'sub-style-probe-api'
 
 local pass, fail = 0, 0
@@ -102,37 +105,43 @@ mp.register_event('file-loaded', function()
             'target=' .. tostring(st and st.target))
 
         ------------------------------------------------- ①b staff_credits user-data
-        local st_ver = mp.get_property_native(STAFF_VERSION_KEY)
-        record('staff-api-userdata-version', st_ver == '1.0.0',
-            'version=' .. tostring(st_ver))
-        local st_raw = mp.get_property_native(STAFF_STATE_KEY)
-        local ok_sst, sst = false, nil
-        if type(st_raw) == 'string' then ok_sst, sst = pcall(utils.parse_json, st_raw) end
-        record('staff-api-userdata-state-json', ok_sst and type(sst) == 'table',
-            'len=' .. (type(st_raw) == 'string' and #st_raw or 0))
-        record('staff-api-state-fields', ok_sst and type(sst) == 'table'
-            and sst.api_version == '1.0.0' and type(sst.features) == 'table'
-            and sst.ready == true,
-            'script=' .. tostring(sst and sst.script_name))
-        record('staff-api-no-token-leak', type(st_raw) == 'string'
-            and not st_raw:find('token', 1, true))
-        send_to(STAFF_PREFIX, 'get-state', 's1')
-        send_to(STAFF_PREFIX, 'list-actions', 's2')
+        if STAFF_ENABLED then
+            local st_ver = mp.get_property_native(STAFF_VERSION_KEY)
+            record('staff-api-userdata-version', st_ver == '1.0.0',
+                'version=' .. tostring(st_ver))
+            local st_raw = mp.get_property_native(STAFF_STATE_KEY)
+            local ok_sst, sst = false, nil
+            if type(st_raw) == 'string' then ok_sst, sst = pcall(utils.parse_json, st_raw) end
+            record('staff-api-userdata-state-json', ok_sst and type(sst) == 'table',
+                'len=' .. (type(st_raw) == 'string' and #st_raw or 0))
+            record('staff-api-state-fields', ok_sst and type(sst) == 'table'
+                and sst.api_version == '1.0.0' and type(sst.features) == 'table'
+                and sst.ready == true,
+                'script=' .. tostring(sst and sst.script_name))
+            record('staff-api-no-token-leak', type(st_raw) == 'string'
+                and not st_raw:find('token', 1, true))
+            send_to(STAFF_PREFIX, 'get-state', 's1')
+            send_to(STAFF_PREFIX, 'list-actions', 's2')
+        else
+            print('PROBE INFO staff-api-skipped: uosc_staff_credits not installed')
+        end
 
         ---------------------------------------------------------------- ② get-state
         send('get-state', 'r1')
         after(0.6, function()
-            local sr = last_reply('s1')
-            record('staff-api-get-state-reply', sr ~= nil and sr.ok
-                and sr.body ~= nil and sr.body.ok == true,
-                sr and sr.raw or 'no reply')
-            record('staff-api-get-state-request-id', sr ~= nil
-                and sr.body ~= nil and sr.body.request_id == 's1')
-            local sr2 = last_reply('s2')
-            record('staff-api-list-actions', sr2 ~= nil and sr2.body ~= nil
-                and sr2.body.ok == true and type(sr2.body.actions) == 'table'
-                and #sr2.body.actions > 0,
-                'n=' .. tostring(sr2 and sr2.body and sr2.body.actions and #sr2.body.actions))
+            if STAFF_ENABLED then
+                local sr = last_reply('s1')
+                record('staff-api-get-state-reply', sr ~= nil and sr.ok
+                    and sr.body ~= nil and sr.body.ok == true,
+                    sr and sr.raw or 'no reply')
+                record('staff-api-get-state-request-id', sr ~= nil
+                    and sr.body ~= nil and sr.body.request_id == 's1')
+                local sr2 = last_reply('s2')
+                record('staff-api-list-actions', sr2 ~= nil and sr2.body ~= nil
+                    and sr2.body.ok == true and type(sr2.body.actions) == 'table'
+                    and #sr2.body.actions > 0,
+                    'n=' .. tostring(sr2 and sr2.body and sr2.body.actions and #sr2.body.actions))
+            end
             local r = last_reply('r1')
             record('api-get-state-reply', r ~= nil and r.ok
                 and r.body ~= nil and r.body.ok == true,
