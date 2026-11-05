@@ -291,6 +291,12 @@ PS：自行编辑配置文件时，注意编码格式应为 UTF-8，换行符为
 
 > 架构与安全设计（为什么必须做成独立脚本、两套更新策略、七项安全措施、
 > 故障排查表、测试体系）见 [`docs/uosc-updater.md`](docs/uosc-updater.md)。
+>
+> 公共更新模块 `script-modules/updater.lua` 已抽成独立公开仓库
+> [awujiana/mpv-script-updater](https://github.com/awujiana/mpv-script-updater)：版本标记、
+> 《脚本更新规范》、发布流程、单测 / 真机 E2E / 变异测试都在那里；本目录保持同步副本
+> （当前 `@version: 1.0.0`）。本表里的两个组件**不含**这个模块自身，`scripts/uosc_updater.lua`
+> 只是接入驱动。
 
 **行为要点**
 - 启动后 30 秒首查，之后每 6 小时一次；网络与 git 调用全部异步，**不阻塞播放**。

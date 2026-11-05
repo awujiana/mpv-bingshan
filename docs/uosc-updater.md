@@ -8,6 +8,15 @@
 > - `script-modules/updater.lua` —— 共享逻辑：版本比较、下载、git 快进、原子替换
 > - `script-opts/uosc_updater.conf` —— 配置项
 
+> **上游公共模块**：`script-modules/updater.lua` 的**唯一权威来源**是公开仓库
+> [awujiana/mpv-script-updater](https://github.com/awujiana/mpv-script-updater)。
+> 版本标记、发布流程、三道版本闸门与责任边界写在它的《脚本更新规范》里；
+> 单测 / 真机 E2E / 变异测试也在该仓库。本目录的这份是**同步副本**，两边应与公共仓库的
+> `script-modules/updater.lua` 保持字节一致（当前 `@version: 1.0.0`）。
+> 改更新逻辑时先改公共仓库、跑门禁并发 Release，再把文件同步回来；不要只在本目录改，
+> 否则生产端和公开规范会各走各的。注意本目录的 `scripts/uosc_updater.lua` 只是这个模块的
+> **接入驱动**，不属于公共仓库，也不在自更新器管理的两个组件之列。
+
 ---
 
 ## 1. 为什么是一个独立脚本，而不是写进两个脚本内部

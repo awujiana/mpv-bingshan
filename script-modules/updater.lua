@@ -1,4 +1,8 @@
 ---- updater.lua —— GitHub 自更新公共模块（mpv Lua 脚本侧）
+-- @version: 1.0.0
+--
+-- 本文件遵循《脚本更新规范》：文件头独立成行的 `-- @version:` 是本地版本唯一来源，
+-- 与 M.VERSION 保持一致；改动功能必须同步递增，否则版本守卫会误判本地为旧版。
 --
 -- 设计约束（本机实测，mpv v0.41）：
 --   * mpv 的 Lua 环境**没有 HTTP 客户端**，`utils.read_file` / `utils.write_file`
