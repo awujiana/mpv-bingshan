@@ -14,6 +14,10 @@
 -- 生效时机：**更新落盘，下次启动 mpv 生效**。mpv 不支持卸载/热重载脚本
 --   （只有 load-script 追加，没有 unload），所以本脚本不会尝试在运行时替换自己。
 --
+-- 版本判定由 script-modules/updater.lua 按脚本文件头的 `-- @version:` 完成：
+--   同版本不更新、本地版本更高时禁止降级，状态文件里的 tag 只代表上次装的远端版本。
+--   详见 docs/uosc-updater.md §3.1（2026-11-05「1.0.5 更新了 1.0.5」报障）。
+--
 -- 手动触发：
 --   script-message uosc-updater-check     立即检查（不等周期）
 --   script-message uosc-updater-status    显示上次检查结果
@@ -163,12 +167,24 @@ local function report(comp, res)
     if res.status == 'updated' then
         local from_ver = res.from_version and tostring(res.from_version) or '未知版本'
         local to_ver = res.to_version and tostring(res.to_version) or '最新版'
+        -- 模块已按版本守卫拦截；这里再兜一层，绝不弹「1.0.5 已更新 1.0.5 → 1.0.5」
+        if res.from_version and res.to_version
+            and updater.compare_version(res.from_version, res.to_version) >= 0 then
+            msg.warn(string.format('uosc_updater: %s 版本未提升（%s → %s），忽略更新提示',
+                label, from_ver, to_ver))
+            return
+        end
         msg.info(string.format('uosc_updater: %s 已更新 %s → %s', label, from_ver, to_ver))
         if OPTIONS.notify then
             osd(string.format('%s 已更新 %s → %s（重启 mpv 生效）', label, from_ver, to_ver), 6)
         end
     elseif res.status == 'uptodate' then
-        msg.verbose(string.format('uosc_updater: %s 已是最新（%s）', label, tostring(res.to_version)))
+        if res.reason then
+            msg.info(string.format('uosc_updater: %s 保持本地版本 %s（%s）', label,
+                tostring(res.from_version or res.to_version), tostring(res.reason)))
+        else
+            msg.verbose(string.format('uosc_updater: %s 已是最新（%s）', label, tostring(res.to_version)))
+        end
     elseif res.status == 'skipped' then
         msg.warn(string.format('uosc_updater: %s 跳过更新（%s）', label, tostring(res.reason)))
     else
@@ -265,7 +281,15 @@ mp.register_script_message('uosc-updater-status', function()
     for _, comp in ipairs(COMPONENTS) do
         local st = state.components[comp.name]
         if st and st.tag then
-            lines[#lines + 1] = (comp.label or comp.name) .. ' ' .. tostring(st.tag)
+            local tag = tostring(st.tag)
+            local lv = st.local_version and tostring(st.local_version) or nil
+            -- 本地版本高于远端时明确说明「不降级」，方便排查假更新提示
+            if lv and updater.compare_version(lv, tag) > 0 then
+                lines[#lines + 1] = (comp.label or comp.name) .. ' 远端 ' .. tag
+                    .. '（本地 ' .. lv .. '，不降级）'
+            else
+                lines[#lines + 1] = (comp.label or comp.name) .. ' ' .. tag
+            end
         end
     end
     osd(table.concat(lines, '｜'), 6)

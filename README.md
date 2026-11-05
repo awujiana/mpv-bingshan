@@ -268,7 +268,7 @@ PS：自行编辑配置文件时，注意编码格式应为 UTF-8，换行符为
 ### 脚本自更新（scripts/uosc_updater.lua）
 
 `uosc_subtitle_style` 与 `uosc_staff_credits` 会自动检查各自的 GitHub 上游，
-有新版就**静默下载替换，下次启动 mpv 生效**——不用手动下载、不用解压覆盖。
+**仅当远端版本更高**才静默下载替换，下次启动 mpv 生效——不用手动下载、不用解压覆盖。
 
 | 组件 | 形态 | 上游 | 更新方式 |
 | --- | --- | --- | --- |
@@ -284,6 +284,11 @@ PS：自行编辑配置文件时，注意编码格式应为 UTF-8，换行符为
 - git 组件**只做快进**：工作区有未提交改动、或本地有额外提交时一律跳过，不会冲掉你的改动。
 - 更新落盘后**下次启动 mpv 生效**——mpv 没有卸载/热重载脚本的能力，强行加载第二份会造成重复注册。
 - 状态记录命中时**不重复下载**那 100 KB 的脚本。
+- **同版本不更新、本地更新时禁止降级**：版本判定以脚本文件头**独立成行**的
+  `-- @version: X.Y.Z` 为准（必须行首，行内举例不会误读），不用状态文件里的 `tag`
+  冒充本地版本——避免「1.0.5 已更新 1.0.5 → 1.0.5」
+  这类假提示，也避免上游旧版覆盖本地开发版。同版本/禁止降级只写日志（`保持本地版本 …`），
+  不弹 OSD。改动脚本功能时请同步递增 `@version`。
 - `uosc_danmaku` 与 `uosc_staff_credits` 以 **git submodule** 形式纳入本仓库（见 `.gitmodules`）：
   克隆请用 `git clone --recursive`，已克隆过的补 `git submodule update --init --recursive`。
   自更新推进子模块后父仓库会显示 submodule 变更，需在父仓库提交一次指向。
@@ -294,14 +299,18 @@ PS：自行编辑配置文件时，注意编码格式应为 UTF-8，换行符为
 
 **手动触发**
 - `script-message uosc-updater-check` —— 立即检查并用 OSD 汇总结果
-- `script-message uosc-updater-status` —— 显示上次检查时间与记录的版本（不联网）
+- `script-message uosc-updater-status` —— 显示上次检查时间与记录的版本（不联网）；
+  本地版本高于远端时额外显示「远端 X（本地 Y，不降级）」。
 
 **测试**
 ```bash
-../luajit.exe tools/updater-test.lua                    # 单测 39 条
-/c/Python314/python.exe tools/updater-e2e.py            # 真机 E2E 14 条（隔离 config-dir）
-/c/Python314/python.exe tools/updater-mutation-test.py  # 7 个变异，须 ALL_KILLED
+../luajit.exe tools/updater-test.lua                    # 单测 72 条
+/c/Python314/python.exe tools/updater-e2e.py            # 真机 E2E 25 条 / 四轮（隔离 config-dir）
+/c/Python314/python.exe tools/updater-mutation-test.py  # 10 个变异，须 ALL_KILLED
 ```
+
+E2E 第三轮复现「状态已记录同版本、本地文件被外部改动」→ 不下载、不覆盖、不弹更新；
+第四轮验证「本地 `@version: 10.0.0`、远端 `9.9.9`」→ 禁止降级。
 
 ### 预览
 

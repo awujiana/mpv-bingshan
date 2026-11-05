@@ -7,6 +7,8 @@
 --   * 版本比较的数值语义（1.0.9 < 1.0.10，不能用字符串比）
 --   * file 型：正常安装 / 快速跳过 / 内容相同不写盘 / 尺寸不符拒绝 / 非 Lua 拒绝
 --   * file 型：API 不可达时回退 version.json
+--   * file 型：同版本绝不假更新、本地/状态版本更高时禁止降级、版本标记解析
+--     （2026-11-05 报障「1.0.5 更新了 1.0.5」+ 本地 v1.0.7 被 v1.0.5 覆盖）
 --   * git 型：已最新 / 可快进 / 工作区脏跳过 / 非快进跳过 / 非仓库报错
 --   * 任何拒绝路径都必须保证**原文件未被改动**
 
@@ -378,6 +380,10 @@ do
         if c:find('example.test', 1, true) then downloaded = true end
     end
     check('file-fastpath-no-download', not downloaded, '状态一致时不应再拉 100KB 资产')
+    -- 快速路径命中与「同 tag 兜底拦下」必须可区分：前者不带 reason。
+    -- 没有这条断言，去掉快速路径会被后面的兜底掩盖（变异测试 F 存活）。
+    check('file-fastpath-hit-not-fallback', res and res.reason == nil,
+        res and tostring(res.reason))
 end
 
 ------------------------------------------------------------------ 5. file 型：内容相同则只补状态，不写盘
@@ -556,6 +562,178 @@ do
     env.git.status = 128
     local res = run(GIT_COMP, state)
     check('git-fetch-error', res and res.status == 'error', res and res.status)
+end
+
+------------------------------------------------------------------ 16. 版本标记解析
+
+local function versioned_body(ver, tag)
+    return '-- fake script ' .. tag .. '\n-- @version: ' .. ver .. '\n'
+        .. string.rep('-- pad\n', 100)
+end
+
+local function asset_downloaded()
+    for _, c in ipairs(env.calls) do
+        if c:find('example.test', 1, true) then return true end
+    end
+    return false
+end
+
+do
+    reset_env()
+    env.files[ROOT .. '/versioned.lua'] = versioned_body('1.0.7', 'local-build')
+    check('read-local-version', updater.read_local_version(ROOT .. '/versioned.lua') == '1.0.7',
+        updater.read_local_version(ROOT .. '/versioned.lua'))
+    env.files[ROOT .. '/plain.lua'] = lua_body('v1.0.5')
+    check('read-local-version-no-marker',
+        updater.read_local_version(ROOT .. '/plain.lua') == nil, '旧版脚本没有标记')
+    check('read-local-version-missing-file',
+        updater.read_local_version(ROOT .. '/nope.lua') == nil)
+
+    -- 正文注释里的举例（非行首）不能被当成本地版本，否则会误判同版本 / 降级。
+    env.files[ROOT .. '/inline-comment.lua'] =
+        '-- 说明：本脚本用 `-- @version: 9.9.9` 举例，别误读\n'
+        .. '-- @version: 1.0.7\n' .. string.rep('-- pad\n', 100)
+    check('read-local-version-ignores-inline-mention',
+        updater.read_local_version(ROOT .. '/inline-comment.lua') == '1.0.7',
+        updater.read_local_version(ROOT .. '/inline-comment.lua'))
+    env.files[ROOT .. '/inline-only.lua'] =
+        '-- 说明：本脚本用 `-- @version: 9.9.9` 举例，别误读\n'
+        .. string.rep('-- pad\n', 100)
+    check('read-local-version-inline-only-is-nil',
+        updater.read_local_version(ROOT .. '/inline-only.lua') == nil,
+        '只有行内举例、没有行首标记时应返回 nil')
+    env.files[ROOT .. '/crlf.lua'] = '-- fake script\r\n-- @version: 1.0.7\r\n'
+        .. string.rep('-- pad\r\n', 100)
+    check('read-local-version-crlf',
+        updater.read_local_version(ROOT .. '/crlf.lua') == '1.0.7',
+        updater.read_local_version(ROOT .. '/crlf.lua'))
+end
+
+------------------------------------------------------------------ 17. 报障复现：状态已记录同 tag，本地文件被外部改动
+
+do
+    reset_env()
+    local state = new_state()
+    local edited = lua_body('locally-edited')
+    env.files[ROOT .. '/scripts/demo.lua'] = edited
+    local remote = lua_body('v1.0.5')
+    env.api = { status = 0, content = api_json('v1.0.5', 'demo.lua', #remote,
+        'https://example.test/demo.lua') }
+    env.asset = { status = 0, content = remote }
+    -- 状态说「装过 1.0.5」，但本地文件尺寸/内容已被外部改动 ⇒ 旧实现会重新下载
+    -- 并以 from_version=st.tag 报「1.0.5 → 1.0.5」
+    state.components.demo_file = { tag = 'v1.0.5', size = 123456, version = '1.0.5' }
+
+    local res = run(FILE_COMP, state)
+    check('same-tag-no-fake-update', res and res.status == 'uptodate', res and res.status)
+    check('same-tag-no-download', not asset_downloaded())
+    check('same-tag-local-file-untouched', env.files[ROOT .. '/scripts/demo.lua'] == edited)
+    check('same-tag-no-updated-at', state.components.demo_file.updated_at == nil)
+    check('same-tag-has-reason', res and type(res.reason) == 'string', res and res.reason)
+    check('same-tag-from-equals-to', res and res.from_version == res.to_version,
+        res and (tostring(res.from_version) .. ' -> ' .. tostring(res.to_version)))
+end
+
+------------------------------------------------------------------ 18. 本地版本高于远端：禁止降级（真机事故回归）
+
+do
+    reset_env()
+    local state = new_state()   -- 故意清空状态，证明守卫不依赖状态文件
+    local local_file = versioned_body('1.0.7', 'local-build')
+    env.files[ROOT .. '/scripts/demo.lua'] = local_file
+    env.api = { status = 0, content = api_json('v1.0.5', 'demo.lua', 100000,
+        'https://example.test/demo.lua') }
+    env.asset = { status = 0, content = lua_body('v1.0.5') }
+
+    local res = run(FILE_COMP, state)
+    check('local-newer-no-downgrade', res and res.status == 'uptodate', res and res.status)
+    check('local-newer-no-download', not asset_downloaded(), '不该为降级去拉旧资产')
+    check('local-newer-file-untouched', env.files[ROOT .. '/scripts/demo.lua'] == local_file)
+    check('local-newer-reason', res and res.reason
+        and res.reason:find('降级', 1, true) ~= nil, res and res.reason)
+    check('local-newer-state-recorded', state.components.demo_file
+        and state.components.demo_file.local_version == '1.0.7')
+    check('local-newer-to-version-is-remote', res and res.to_version == '1.0.5',
+        res and res.to_version)
+end
+
+------------------------------------------------------------------ 19. 本地版本与远端相同：不更新、不下载
+
+do
+    reset_env()
+    local state = new_state()
+    local local_file = versioned_body('1.0.5', 'local')
+    env.files[ROOT .. '/scripts/demo.lua'] = local_file
+    env.api = { status = 0, content = api_json('v1.0.5', 'demo.lua', 100000,
+        'https://example.test/demo.lua') }
+    env.asset = { status = 0, content = lua_body('v1.0.5') }
+
+    local res = run(FILE_COMP, state)
+    check('local-same-version-uptodate', res and res.status == 'uptodate', res and res.status)
+    check('local-same-version-no-download', not asset_downloaded())
+    check('local-same-version-untouched', env.files[ROOT .. '/scripts/demo.lua'] == local_file)
+end
+
+------------------------------------------------------------------ 20. 本地版本较旧：仍要正常更新，且 from/to 必须是不同版本
+
+do
+    reset_env()
+    local state = new_state()
+    local old = versioned_body('1.0.4', 'local')
+    local newer = versioned_body('1.0.6', 'v1.0.6')
+    env.files[ROOT .. '/scripts/demo.lua'] = old
+    env.api = { status = 0, content = api_json('v1.0.6', 'demo.lua', #newer,
+        'https://example.test/demo.lua') }
+    env.asset = { status = 0, content = newer }
+
+    local res = run(FILE_COMP, state)
+    check('local-older-installs', res and res.status == 'updated', res and res.status)
+    check('local-older-content', env.files[ROOT .. '/scripts/demo.lua'] == newer)
+    check('local-older-from-is-local', res and res.from_version == '1.0.4',
+        res and res.from_version)
+    check('local-older-to-is-remote', res and res.to_version == '1.0.6',
+        res and res.to_version)
+    check('updated-from-to-differ', res and res.from_version ~= res.to_version)
+    check('local-older-state-version', state.components.demo_file
+        and state.components.demo_file.local_version == '1.0.6')
+end
+
+------------------------------------------------------------------ 21. 状态记录的版本比远端新（远端回退发布）：安装前兜底拦截
+
+do
+    reset_env()
+    local state = new_state()
+    local local_file = lua_body('v1.0.6')   -- 旧脚本没有版本标记，只能靠状态兜底
+    local remote = lua_body('v1.0.5')
+    env.files[ROOT .. '/scripts/demo.lua'] = local_file
+    env.api = { status = 0, content = api_json('v1.0.5', 'demo.lua', #remote,
+        'https://example.test/demo.lua') }
+    env.asset = { status = 0, content = remote }
+    state.components.demo_file = { tag = 'v1.0.6', size = 1, version = '1.0.6' }
+
+    local res = run(FILE_COMP, state)
+    check('state-newer-than-remote-no-downgrade', res and res.status == 'uptodate',
+        res and res.status)
+    check('state-newer-file-untouched', env.files[ROOT .. '/scripts/demo.lua'] == local_file)
+    check('state-newer-reason', res and res.reason
+        and res.reason:find('版本未提升', 1, true) ~= nil, res and res.reason)
+end
+
+------------------------------------------------------------------ 22. 状态同 tag 但本地文件被删：仍要重新安装
+
+do
+    reset_env()
+    local state = new_state()
+    local remote = lua_body('v1.0.5')
+    -- 故意不写 env.files[target]：脚本被误删，不能因为状态说「装过」就假装已安装
+    env.api = { status = 0, content = api_json('v1.0.5', 'demo.lua', #remote,
+        'https://example.test/demo.lua') }
+    env.asset = { status = 0, content = remote }
+    state.components.demo_file = { tag = 'v1.0.5', size = 1, version = '1.0.5' }
+
+    local res = run(FILE_COMP, state)
+    check('missing-file-reinstalls', res and res.status == 'updated', res and res.status)
+    check('missing-file-restored', env.files[ROOT .. '/scripts/demo.lua'] == remote)
 end
 
 uninstall_stubs()

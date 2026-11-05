@@ -11,6 +11,11 @@
 --   * 安装前一律先写同目录的 `.new` 暂存文件并校验（尺寸、Lua 头），
 --     通过后才替换原文件；替换用「临时中转名 + rename」保证失败可回滚，
 --     中转文件在成功后立即删除 ⇒ **不保留 .bak 备份**，目录里不留多余文件。
+--   * **版本判定以脚本自身声明的 `-- @version:` 为准**，不是状态文件里的 tag。
+--     tag 只代表「上次从远端装了什么」，本地文件可能已被 git / 手工改过；
+--     拿 tag 当本地版本会弹「1.0.5 已更新 1.0.5 → 1.0.5」，甚至把本地更新版
+--     降级成远端旧版（2026-11-05 真机事故：v1.0.7 被 v1.0.5 资产覆盖）。
+--     同版本不更新、本地更新时禁止降级、安装前再兜一层「版本未提升不覆盖」。
 --
 -- 两种组件形态：
 --   kind = 'file'  单文件脚本，跟 GitHub Release 的最新资产（uosc_subtitle_style）
@@ -157,6 +162,27 @@ function M.compare_version(a, b)
     return 0
 end
 
+------------------------------------------------------------------ 本地版本标记
+
+-- 被管理的脚本在文件头声明独立成行的 `-- @version: 1.0.7`。只在头 8KB 里找，
+-- 且必须出现在**行首**：否则正文注释里随手写的一句「例如 `-- @version: 9.9.9`」
+-- 就会被当成本地版本，进而误判同版本 / 降级（正是本次报障的错误类别）。
+local function version_from_text(text)
+    if type(text) ~= 'string' then return nil end
+    local head = text:sub(1, 8192)
+    for line in head:gmatch('[^\r\n]+') do
+        local ver = line:match('^%s*%-%-%s*@version:%s*(%d[%d%.]*)')
+        if ver and #M.parse_version(ver) > 0 then return ver end
+    end
+    return nil
+end
+
+-- 读脚本自身声明的版本；旧版脚本没有标记时返回 nil（由调用方走兜底路径）。
+function M.read_local_version(path)
+    if type(path) ~= 'string' then return nil end
+    return version_from_text(M.read_text(path))
+end
+
 ------------------------------------------------------------------ 组件规范化
 
 -- spec 必填：name / kind / repo；kind='file' 还需 asset + target；
@@ -259,6 +285,23 @@ local function check_file(comp, state, opts, cb)
 
         local st = state.components[comp.name] or {}
         local local_size = M.file_size(target)
+        -- 全文只读一次：既取本地版本标记，也供后面的逐字节比较复用
+        local old_text = local_size and M.read_text(target) or nil
+        local local_ver = version_from_text(old_text)
+        local remote_ver = info.version
+
+        -- ① 版本判定以脚本自身标记为准：同版本不更新、本地更新时禁止降级。
+        --    绝不能拿 st.tag（上次安装的远端版本）冒充本地版本——那正是
+        --    「1.0.5 更新了 1.0.5」和把本地 v1.0.7 降级成 v1.0.5 的根因。
+        if local_ver and M.compare_version(local_ver, remote_ver) >= 0 then
+            local newer = M.compare_version(local_ver, remote_ver) > 0
+            st.local_version = local_ver
+            st.checked_at = os.time()
+            state.components[comp.name] = st
+            cb({ status = 'uptodate', from_version = local_ver, to_version = remote_ver,
+                reason = newer and '本地版本更新，禁止降级' or '本地已是该版本' })
+            return
+        end
 
         -- 快速判定：状态记录的 tag/size 与远端一致，且本地文件尺寸没变
         -- ⇒ 完全跳过下载（避免每轮都拉 100KB）
@@ -267,6 +310,19 @@ local function check_file(comp, state, opts, cb)
             st.checked_at = os.time()
             state.components[comp.name] = st
             cb({ status = 'uptodate', from_version = info.version, to_version = info.version })
+            return
+        end
+
+        -- ② 旧脚本没有版本标记时：状态里已记录同一 tag ⇒ 视为已安装该版本。
+        --    本地文件被外部改动（git 切分支、手工编辑）导致尺寸/内容不同，
+        --    也不再重复安装同一版本，更不弹「已更新 X → X」。
+        --    ⚠ 必须要求本地文件存在：文件被误删时仍要重新下载，不能「假装已安装」。
+        if local_size and not local_ver and (st.tag == info.tag or
+                (st.version and M.compare_version(st.version, remote_ver) == 0)) then
+            st.checked_at = os.time()
+            state.components[comp.name] = st
+            cb({ status = 'uptodate', from_version = remote_ver, to_version = remote_ver,
+                reason = '状态已是该版本，本地文件另有改动' })
             return
         end
 
@@ -297,7 +353,7 @@ local function check_file(comp, state, opts, cb)
             end
 
             -- 与本地逐字节比较：相同说明只是状态文件丢了，不写盘
-            local old = local_size and M.read_text(target) or nil
+            local old = old_text
             if old and old == new then
                 os.remove(tmp)
                 st.tag = info.tag
@@ -309,9 +365,26 @@ local function check_file(comp, state, opts, cb)
                 return
             end
 
+            -- ③ 安装前最后一道闸：版本没有提升就绝不覆盖。
+            --    即使前面两道守卫都因异常数据漏掉，也不能出现「X → X」的假更新，
+            --    更不能把本地更新版降级成远端旧版。
+            local from_ver = local_ver
+                or (st.version and tostring(st.version):gsub('^[vV]', ''))
+                or (st.tag and tostring(st.tag):gsub('^[vV]', ''))
+                or nil
+            --    old 为空表示本地文件本来就不存在，那是全新安装而非「覆盖」，不拦。
+            if old and from_ver and M.compare_version(from_ver, remote_ver) >= 0 then
+                os.remove(tmp)
+                st.local_version = local_ver
+                st.checked_at = os.time()
+                state.components[comp.name] = st
+                cb({ status = 'uptodate', from_version = from_ver, to_version = remote_ver,
+                    reason = '版本未提升，不覆盖本地文件' })
+                return
+            end
+
             -- 替换：**不保留 .bak 备份**。旧文件先挪成临时中转名（只为失败回滚），
             -- 新文件就位后立刻删掉中转文件 ⇒ 正常路径下目录里不留任何多余文件。
-            local prev = st.tag
             local swap = target .. '.tmpbak'
             os.remove(swap)
             local moved = old and os.rename(target, swap) or true
@@ -330,10 +403,11 @@ local function check_file(comp, state, opts, cb)
             st.tag = info.tag
             st.size = nsize
             st.version = info.version
+            st.local_version = version_from_text(new)
             st.checked_at = os.time()
             st.updated_at = os.time()
             state.components[comp.name] = st
-            cb({ status = 'updated', from_version = prev, to_version = info.version, size = nsize })
+            cb({ status = 'updated', from_version = from_ver, to_version = info.version, size = nsize })
         end)
     end)
 end

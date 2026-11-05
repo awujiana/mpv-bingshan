@@ -6,14 +6,18 @@
 让更新器面对真实环境：
   * 真实 curl 进程访问本地 HTTP 服务（假 GitHub API + 假 Release 资产）
   * 真实 git 进程访问本地 bare 仓库（假远程，离线可跑）
-  * 真实文件替换（.new 暂存 → .bak 备份 → 覆盖）
+  * 真实文件替换（.new 暂存 → 临时中转名 → 覆盖，不保留 .bak）
 
 断言（都是"错了会毁用户文件"的点）：
-  1. 单文件组件被替换成新内容，旧内容进 .bak
+  1. 单文件组件被替换成新内容，且不残留 .bak / .new / .tmpbak
   2. git 组件被快进到远程 HEAD
   3. 状态文件记录了两边的版本
   4. 日志无 Lua error / traceback
   5. **第二轮不再下载资产**（快速路径生效）且不再重复更新
+  6. **第三轮：状态已记录同版本但本地文件被外部改动** → 不下载、不覆盖、不弹
+     「已更新 9.9.9 → 9.9.9」（2026-11-05 用户报障「1.0.5 更新了 1.0.5」）
+  7. **第四轮：本地脚本声明的版本高于远端** → 禁止降级，本地 v10.0.0 不被
+     v9.9.9 资产覆盖（同日真机事故：v1.0.7 被 v1.0.5 覆盖）
 
 用法（在 portable_config/ 下）：
   /c/Python314/python.exe tools/updater-e2e.py
@@ -273,6 +277,59 @@ def main():
         check('run2-file-unchanged', read(target) == new_body)
         bad2 = [kw for kw in ('Lua error', 'traceback', 'attempt to call') if kw in logtext2]
         check('run2-no-lua-error', not bad2, bad2)
+
+        # ---------------- 第三轮：状态已记录同版本，本地文件被外部改动 ----------------
+        # 复现用户报障「1.0.5 更新了 1.0.5」：状态里 tag 已是 v9.9.9，
+        # 但本地文件被 git/手工改过（尺寸与记录不一致）。旧实现会重新下载，
+        # 并拿 st.tag 当 from_version 报「9.9.9 → 9.9.9」；现在必须直接 uptodate。
+        edited = lua_body('locally-edited', pad_lines=120)
+        with open(target, 'w', encoding='utf-8', newline='\n') as f:
+            f.write(edited)
+        Handler.hits = []
+        log3 = os.path.join(work, 'mpv3.log')
+        run_mpv(tmp, log3)
+
+        logtext3 = read(log3) or ''
+        hits3 = [h for h in Handler.hits if h.endswith('uosc_subtitle_style.lua')]
+        check('run3-no-fake-update', '已更新' not in logtext3,
+              [ln for ln in logtext3.splitlines() if 'uosc_updater' in ln][:3])
+        check('run3-no-asset-download', len(hits3) == 0, '资产请求=%d' % len(hits3))
+        check('run3-local-edit-preserved', read(target) == edited,
+              '本地改动不能被同版本资产覆盖')
+        check('run3-explained-in-log',
+              '状态已是该版本' in logtext3 or '保持本地版本' in logtext3,
+              [ln for ln in logtext3.splitlines() if 'uosc_updater' in ln][:3])
+        check('run3-no-lua-error',
+              not [kw for kw in ('Lua error', 'traceback', 'attempt to call')
+                   if kw in logtext3])
+
+        # ---------------- 第四轮：本地版本高于远端 → 禁止降级 ----------------
+        # 同日真机事故：本地 v1.0.7 被远端 v1.0.5 资产覆盖。
+        newer_local = ('-- fake script local build\n-- @version: 10.0.0\n'
+                       + '-- padding line for size\n' * 120)
+        with open(target, 'w', encoding='utf-8', newline='\n') as f:
+            f.write(newer_local)
+        Handler.hits = []
+        log4 = os.path.join(work, 'mpv4.log')
+        run_mpv(tmp, log4)
+
+        logtext4 = read(log4) or ''
+        hits4 = [h for h in Handler.hits if h.endswith('uosc_subtitle_style.lua')]
+        state4 = json.loads(read(state_path) or '{}')
+        check('run4-no-downgrade-update', '已更新' not in logtext4,
+              [ln for ln in logtext4.splitlines() if 'uosc_updater' in ln][:3])
+        check('run4-no-asset-download', len(hits4) == 0, '资产请求=%d' % len(hits4))
+        check('run4-local-version-preserved', read(target) == newer_local,
+              '本地 v10.0.0 不能被 v9.9.9 资产降级')
+        check('run4-downgrade-reason-logged', '禁止降级' in logtext4,
+              [ln for ln in logtext4.splitlines() if 'uosc_updater' in ln][:3])
+        check('run4-state-local-version',
+              state4.get('components', {}).get('uosc_subtitle_style', {})
+                   .get('local_version') == '10.0.0',
+              state4.get('components', {}).get('uosc_subtitle_style'))
+        check('run4-no-lua-error',
+              not [kw for kw in ('Lua error', 'traceback', 'attempt to call')
+                   if kw in logtext4])
 
         httpd.shutdown()
     finally:
