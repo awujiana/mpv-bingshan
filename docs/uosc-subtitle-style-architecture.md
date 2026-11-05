@@ -1,8 +1,9 @@
 # uosc_subtitle_style.lua 架构文档
 
-> 版本：2026-11-05（v1.0.8：主/次分轨 + 字体选择器 + 描边 + 位置避让 +
-> 灰色/`\pos` 字幕样式表覆盖 + 视频内嵌上下黑边贴合 + **所有内封字幕轨全量检查**）
-> 适用范围：`scripts/uosc_subtitle_style.lua`（约 2700 行）及其配置、测试与工具链。
+> 版本：2026-11-05（v1.0.9：主/次分轨 + 字体选择器 + 描边 + 位置避让 +
+> 灰色/`\pos` 字幕样式表覆盖 + 视频内嵌上下黑边贴合 + 全内封轨检查 +
+> **内封定位 ASS 的 Fontsize 缩放/字号通道 + ±1px 字号微调**）
+> 适用范围：`scripts/uosc_subtitle_style.lua`（约 2900 行）及其配置、测试与工具链。
 > 结论均标注「源码依据」或「本机实测」，未经验证的推断不写入本文件。
 
 ---
@@ -34,13 +35,17 @@
 | `~~/uosc-subtitle-style-state.json` | 运行时状态（主/次分轨记忆，自动生成） |
 | `~~/uosc-subtitle-style-preset.json` | 预设样式缓存（载入时套用的目标样式，自动生成） |
 | `~~/uosc-subtitle-style-fonts.json` | 字体枚举缓存（带签名，自动生成） |
-| `tools/sub-style-test.lua` | 单元测试（stub mpv 运行时 + 虚拟文件系统），133 项 |
-| `tools/sub-style-e2e.py` | 真机 E2E 编排（三阶段：双轨视觉 + 字幕流连续性 + 预设样式四用例） |
+| `tools/sub-style-test.lua` | 单元测试（stub mpv 运行时 + 虚拟文件系统），**290 项** |
+| `tools/sub-style-e2e.py` | 真机 E2E 编排（双轨视觉 / 字幕流连续性 / 预设 A–F / v1.0.6 报障 / v1.0.7 黑边 / v1.0.9 内封 `\pos` ASS） |
 | `tools/sub-style-probe.lua` | E2E 阶段一探针（双字幕轨、25 条断言） |
-| `tools/sub-style-probe-stream.lua` | E2E 阶段二探针（多句 fixture，字幕流连续性） |
-| `tools/sub-style-probe-preset.lua` | E2E 阶段三探针（套用/保持断言 + 前后对比截图） |
-| `tools/sub-style-probe-preset-save.lua` | E2E 阶段三探针（改样式 + 存预设 + 落盘断言） |
+| `tools/sub-style-probe-stream.lua` | 多句 fixture，字幕流连续性 |
+| `tools/sub-style-probe-preset.lua` / `-save.lua` | 预设套用 / 保持 / 存盘断言 + 前后对比截图 |
+| `tools/sub-style-probe-pos.lua` | v1.0.6 灰色 `#8B8B8B` + 带 `\pos` 顶部字幕转黑白 |
+| `tools/sub-style-probe-bars.lua` | v1.0.7 上下黑边贴合（双轨 SRT，15 断言 + Python 侧独立复核） |
+| `tools/sub-style-probe-fontsize.lua` | v1.0.9 内封 `\pos` ASS 缩放 / 字号 / 黑边限缩（plain+bars 共 27 断言） |
+| `tools/sub-style-mkv-fixture.py` | 纯 Python 最小 Matroska muxer：生成带**内封** ASS 轨的 MKV（不依赖 ffmpeg） |
 | `tools/sub-style-smoke.ass` / `-sec.ass` / `-multi.ass` / `-colored.ass` | fixture（主轨 / 次轨 / 多句 / 彩色） |
+| `tools/sub-style-smoke-pos-gray.ass` / `-bars-{main,sec}.srt` | 定位灰色字幕 / 双轨黑边夹具 |
 
 ---
 
@@ -380,7 +385,7 @@ E2E 有还原断言。
 
 ## 11. 测试体系
 
-### 11.1 单元测试（`tools/sub-style-test.lua`，259 项）
+### 11.1 单元测试（`tools/sub-style-test.lua`，290 项）
 
 自建 stub：`mp`（全局注入，非 `package.loaded`）、`mp.msg/utils/options`、
 可 `seek` 的虚拟文件系统、计时器队列（`flush_timers()` 验证延迟设置）、
@@ -394,7 +399,13 @@ E2E 有还原断言。
 **双语跳过与开关（T34-T35）/ 避让间距可配（T36）/ 报告时长可配（T37）** /
 v1.0.6 灰阶识别与共享样式表覆盖 / v1.0.7 黑边贴合（T48-T51）/
 v1.0.8 全内封轨检查（T52，13 条：报告统计、切轨重检、灰色识别关闭仍套用、
-标准白字 / 外挂 / 开关关闭保持旧行为）。
+标准白字 / 外挂 / 开关关闭保持旧行为）/
+v1.0.9 内封定位 ASS 通道（T53，31 条：`sub-ass-extradata` 的 `PlayResY`/`Style`
+解析、无偏差不写 `Fontsize`、缩放与字号折算、`sub-scale` 归 1、
+`sub-font-size` 折入倍率、失效覆盖清理、±1px 连续微调与上下限、
+点回基线清掉无效 `Fontsize`、外挂 ASS / 无样式表零回归、
+`ass-fontsize-toggle` 开关、菜单入口、黑边按 ASS 原始字号估算盒高、
+`size-step` 写全局预设）。
 
 T48-T51 用 32×200 合成帧（上下各 12 行纯黑、中央 128 灰）走 `screenshot-raw('video')`
 逐行亮度检测，覆盖：主轨 100 / 次轨 0 / 两轨限缩倍率 / `sub-margin-y` 居中且为整数 /
@@ -792,6 +803,132 @@ SID=3  SUB_COLOR=#FFFFFFFF  ASS_OVERRIDE=force  SHARED_PRIMARY=true
 `sub-ass-style-overrides`（带 `\pos` 的顶部字幕 / signs 也会变色）。
 `uosc_danmaku` 的 `sites/iqiyi.lua:17` 报错是第三方 submodule 已知问题，与本次改动无关。
 
+---
+
+## 18. v1.0.9：内封定位 ASS 的缩放 / 字号通道与 ±1px 微调
+
+### 18.1 报障与真机定位
+
+用户报障：菜单里「上移/下移 5%（微调）」和「整体缩放 ×0.80/×1.00/×1.25/×1.50」
+点了都没反应，只有切换字体生效；同时要求「上下黑边视频默认把字幕缩小到能放进黑边、
+嫌小可以点放大并保存」，并质疑整体缩放不能精准放大字号。
+
+真机（示例 MKV `--pause=yes`，seek 到 `t=120` 有字幕，注入诊断脚本逐项写属性再取
+`screenshot-raw` 差分）结论：
+
+```text
+BEFORE       pos=150 scale=1.5 margin=34 fontsize=60 px=5408
+nudge -5  →  pos=145 scale=1.5                    px=5408   ← 画面不变
+scale 1.5 →            scale=1.5                 px=5408   ← 画面不变
+size 60   →                        fontsize=60  px=5408   ← 画面不变
+font Arial →  sub-ass-style-overrides/FontName    px=7825  ← 只有这条变了
+```
+
+`--no-config` 隔离复验：带 `\pos` 的 **explicit ASS 事件**对 `sub-pos` /
+`sub-scale` / `sub-font-size` 全部豁免；`sub-ass-style-overrides` 的 `FontName` /
+`Fontsize` 有效。`sub-pos` 初值已是 `POS_MAX=150`，`nudge +5` 被 `clamp` 静默吞掉，
+是「下移没反应」的第二个独立 bug。
+
+### 18.2 为什么用 `Fontsize` 而不是 `ScaleX/ScaleY`
+
+`sub-ass-style-overrides` 支持 `ScaleX` / `ScaleY`，看起来更像「相对倍率」，但真机
+实测 `125` / `150` 时字幕**直接消失**（超出 ASS 事件布局盒被裁），不适合作为倍率通道。
+`Fontsize` 稳定且支持小数：`18 → 18.5 → 19` 时字幕盒高度 `114 → 118 → 122px`，
+足以承载 ±1px 精细调节。
+
+基准字号不再硬编码 720p 比例：mpv 在有 ASS 轨时暴露 `sub-ass-extradata`
+（ASS 头全文），`ass_style_info()` 从中读 `PlayResY` 与 `Style: ...,Fontsize`，
+取 `Default` 样式字号为 `base_units`、`max` 为盒高估算用；读不到时才退回
+`size_baseline × ass_fontsize_ratio` 兜底。示例 MKV 实测：
+
+```text
+PlayResX: 384   PlayResY: 288   Style: Default,Microsoft YaHei,21,...
+```
+
+### 18.3 折算与双叠加防护
+
+```text
+factor      = (target_style.size / baseline.size) × effective_scale()
+Fontsize    = base_units × clamp(factor, 0.02, 20)
+sub-font-size = (target_style.size or baseline.size) × (通道激活 and effective_scale() or 1)
+sub-scale / secondary-sub-scale = 1     （仅通道激活时）
+```
+
+- `effective_scale()` 优先取 `barfit.scale`（黑边限缩），否则取目标轨 `layout`/`cur().scale`。
+- `factor == 1` 时**不写** `Fontsize`：否则会把 ASS 里多个 Style 的原始字号层级压平成
+  单一值（真机 E2E 关闭黑边贴合后暴露出残留 `Fontsize=20`，已修 + T53 回归）。
+- `force` 模式下 `Fontsize` 管 explicit 事件、`sub-font-size` 管普通对白，互不叠加；
+  `scale` 模式下若同时保留 `sub-scale=1.5` 与 `Fontsize=36`，普通对白会被双叠加
+  `16px → 37px`。故通道激活时把两轨 `sub-scale` 归 1，倍率统一折进两条通道。
+
+真机叠加实验（`--no-config`，同一帧）：
+
+```text
+EXP 00-baseline          top(n=1143 h=16)  bot(n=1616 h=16)
+EXP 01-scale1.5          top(n=1143 h=16)  bot(n=3362 h=25)
+EXP 02-fontsize36        top(n=2348 h=25)  bot(n=3362 h=25)
+EXP 03-scale1.5+fs36     top(n=2348 h=25)  bot(n=7351 h=37)   ← 双叠加
+```
+
+### 18.4 黑边贴合扩展到内封定位 ASS
+
+v1.0.7 的 `barfit.scale` 只写 `sub-scale`/`sub-margin-y`，对 `\pos` 事件无效。
+v1.0.9 让 `effective_scale()` 直接读 `barfit.scale`，因此限缩倍率自动进入
+`Fontsize`；`compute_barfit()` 新增 `unit_px` 参数，内封 ASS 时按
+`max(Fontsize) × 1.2 × frame_h / PlayResY` 估算单行物理高度，避免拿 720p 等效字号
+去估 `PlayResY=288` 的内封轨。位置仍按用户确认的范围**保持原位**，不 `strip`、不重写事件。
+
+黑边贴合激活时 `size-step` 会把放大后的字号写进 `preset.size` 并 `save_preset()`，
+作用范围是**全局预设**（下一个黑边视频沿用同一字号），对应「嫌自动缩小太小、点几下
+放大就记住」的诉求。
+
+### 18.5 `ass_pending` 与共享通道代价
+
+`file-loaded` 时 `sub-ass-extradata` 可能尚未就绪，故置 `ass_pending`，等首个
+`sub-text` 到达且样式表可读时补一次 `apply_all(false)` / `nudge_reconfigure()` /
+必要时 `refresh_barfit()`。
+
+`sub-ass-style-overrides` 是**解码器级共享列表**：写 `Fontsize` 会让主/次轨同变，
+且列表变化本身会触发一次重建（与 §10 的「稳态零重建」不同）。这是为覆盖 `\pos`
+字幕付出的既定代价，与 v1.0.6 的 `FontName`/`PrimaryColour` 一致；菜单
+「其它 → 内封定位字幕可缩放/改字号」(`ass-fontsize-toggle`) 可随时退回原生通道。
+外挂 ASS / 非 ASS / 拿不到 `sub-ass-extradata` 时 `ass_channel_active()` 为假，
+保持 v1.0.8 行为不变（T53 有零回归断言）。
+
+### 18.6 真机 E2E：不依赖 ffmpeg 的内封 ASS 夹具
+
+新通道只在 **`current-tracks/sub.external == false`** 时启用。用 `--sub-file=x.ass`
+加载的是外挂轨，测不到；`mpv x.ass` 因无视频/音频流被拒绝；示例 MKV 4.1GB 且不在
+仓库里；本机没有 ffmpeg。`tools/sub-style-mkv-fixture.py` 于是直接按 EBML 写最小
+Matroska（约 5KB）：一条 `V_MJPEG` 单帧视频轨（Pillow 生成 `640×360`，可带上下
+24px 黑条）+ 一条 `S_TEXT/ASS` 轨（`CodecPrivate` 存 ASS 头，`BlockGroup` 存
+`{\pos(320,60)}TOPDIALOG` 与 `BOTTOMDIALOG`）。mpv 解析后
+`track-list` 中该轨 `external=false`，`sub-ass-extradata` 可读。
+
+`tools/sub-style-probe-fontsize.lua` 跑 plain / bars 两轮，只统计上字幕带
+`y20..130` 的 `screenshot-raw('subtitles')` 与 `('video')` 逐像素差分
+（避开底部 OSD 提示与 uosc 控件），共 27 条探针断言 + Python 侧独立复核：
+
+```text
+PLAIN  00-baseline            n=1509 h=18 ov=-            scale=1   fsz=50
+       01-scale150            n=2660 h=24 ov=Fontsize=30  scale=1   fsz=75
+       02-scale100            n=1510 h=18 ov=-            scale=1   fsz=50
+       03-sizeplus8           n=1846 h=20 ov=Fontsize=23.2           fsz=58
+       05-nudge               n=1511 h=18 y1=58  pos=150  ← \pos 不位移
+       07-off-scale-no-visual n=1509 h=18 ov=-   scale=1.5 ← 复现原报障
+       09-toggle-on-restores  n=2660 h=24 ov=Fontsize=30
+BARS   00-fit                 n=1265 h=17 ov=Fontsize=18  ← 自动缩小
+       01-sizeplus8           n=1591 h=19 ov=Fontsize=20.88（已存全局预设）
+       03-fit-off             n=1508 h=18 ov=-            ← 还原
+```
+
+### 18.7 配置
+
+`script-opts/uosc_subtitle_style.conf` 新增 `ass_fontsize` /
+`ass_fontsize_ratio` / `size_baseline` / `size_step` / `size_min` / `size_max` /
+`size_step_saves_preset` 七项；`ass_fontsize=no` 即回到 v1.0.8 的原生 `sub-scale` 行为。
+`sub-style-conf-verify.py` 强制 conf 键集合与脚本 `o` 表一致。
+
 > ⚠ 改本脚本功能必须同步递增文件头 `-- @version: X.Y.Z`：
 > `script-modules/updater.lua` 以它判定本地版本，本地 ≥ 远端时不更新、禁止降级。
-> 本次 v1.0.7 → **v1.0.8**。
+> 本次 v1.0.8 → **v1.0.9**。

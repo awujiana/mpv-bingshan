@@ -21,6 +21,10 @@
 #       的图片当视频帧，双轨 SRT 普通对白；探针轮询等自动检测落定后，
 #       对比开关前后的字幕像素分布 —— 贴合后主/次轨分别缩进下/上黑边，
 #       画面中部（视频内容区）差分像素必须归零。
+#   5e. v1.0.9 内封定位 ASS：用 sub-style-mkv-fixture.py 生成带内封 ASS
+#       轨的最小 MKV（MJPEG 单帧 + \pos 事件），跑 plain / bars 两轮真机，
+#       验证缩放与字号真的改变 \pos 字幕画面、sub-scale 不双叠加、\pos 不随
+#       nudge 位移、关通道可复现原报障、黑边自动缩小并把放大值存进预设。
 #   ⚠ 第三方插件（.gitmodules 里的 submodule）自身的 Lua 报错由 lua_errors()
 #     按日志标签隔离，被测脚本与探针的任何报错仍然算 FAIL。
 # 用法（在 portable_config/ 下）：python tools/sub-style-e2e.py
@@ -52,6 +56,8 @@ PROBE_POS = os.path.join(PORTABLE, 'tools', 'sub-style-probe-pos.lua')
 PROBE_BARS = os.path.join(PORTABLE, 'tools', 'sub-style-probe-bars.lua')
 FIXTURE_BARS_MAIN = os.path.join(PORTABLE, 'tools', 'sub-style-smoke-bars-main.srt')
 FIXTURE_BARS_SEC = os.path.join(PORTABLE, 'tools', 'sub-style-smoke-bars-sec.srt')
+MKV_FIXTURE = os.path.join(PORTABLE, 'tools', 'sub-style-mkv-fixture.py')
+PROBE_FONTSIZE = os.path.join(PORTABLE, 'tools', 'sub-style-probe-fontsize.lua')
 STATE_FILE = os.path.join(PORTABLE, 'uosc-subtitle-style-state.json')
 PRESET_FILE = os.path.join(PORTABLE, 'uosc-subtitle-style-preset.json')
 FONT_CACHE = os.path.join(PORTABLE, 'uosc-subtitle-style-fonts.json')
@@ -612,6 +618,137 @@ def main():
     check('bars-no-lua-errors', len(berrs) == 0,
           '; '.join(berrs[:2]) + (' | 已忽略第三方插件报错 %d 行' % bignored
                                   if bignored else ''))
+
+    # ---- 5e. v1.0.9 内封 \pos ASS：缩放 / 字号 / 黑边自动缩小真机回归 ----
+    # 没有 ffmpeg、示例 MKV 4.1GB 也不在仓库里，所以夹具由纯 Python 直接写
+    # 最小 Matroska：MJPEG 单帧视频 + 内封 S_TEXT/ASS 轨（含 \pos 事件）。
+    # mpv 播放它时 current-tracks/sub.external=false，才走得到 v1.0.9 新通道。
+    import importlib.util
+    spec = importlib.util.spec_from_file_location('sub_style_mkv_fixture', MKV_FIXTURE)
+    mkvmod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mkvmod)
+    fs_plain = os.path.join(workdir, 'internal-plain.mkv')
+    fs_bars = os.path.join(workdir, 'internal-bars.mkv')
+    mkvmod.build(fs_plain, bars=0)
+    mkvmod.build(fs_bars, bars=24)
+    check('fs-fixtures-built',
+          os.path.getsize(fs_plain) > 1024 and os.path.getsize(fs_bars) > 1024,
+          'plain=%d bars=%d bytes' % (os.path.getsize(fs_plain),
+                                      os.path.getsize(fs_bars)))
+
+    def run_fs(tag, mkv_path, mode, base_n=0):
+        for p in (STATE_FILE, PRESET_FILE):
+            if os.path.exists(p):
+                os.remove(p)
+        flog = os.path.join(workdir, 'fs-' + tag + '-log.txt')
+        fcmd = [
+            MPV, '--script=' + PROBE_FONTSIZE,
+            '--vo=gpu', '--ao=null', '--pause=yes',
+            '--image-display-duration=inf',
+            '--watch-later-dir=' + watch_dir,
+            '--save-position-on-quit=no', '--no-resume-playback',
+            '--msg-level=all=info', mkv_path,
+        ]
+        fenv = dict(env)
+        fenv['SUBSTYLE_FS_MODE'] = mode
+        fenv['SUBSTYLE_FS_BASE_N'] = str(int(base_n))
+        print('RUN(fs-%s):' % tag, ' '.join(fcmd))
+        fproc = subprocess.run(fcmd, cwd=MPV_DIR, env=fenv,
+                               stdout=open(flog, 'w'), stderr=subprocess.STDOUT,
+                               timeout=180)
+        print('mpv(fs-%s) exit=%d' % (tag, fproc.returncode))
+        return open(flog, encoding='utf-8', errors='replace').read()
+
+    def fs_n(text, tag):
+        m = re.search(r'FS %s n=(\d+)' % re.escape(tag), text)
+        return int(m.group(1)) if m else None
+
+    def fs_asserts(prefix, text, expected):
+        rs = probe_of(text)
+        for name in expected:
+            if name not in rs:
+                check(prefix + name, False, 'missing in log')
+            else:
+                check(prefix + name, rs[name][0] == 'PASS', rs[name][1][:150])
+        sm = re.search(r'PROBE SUMMARY pass=(\d+) fail=(\d+)', text)
+        check(prefix + 'summary-all-ok', bool(sm) and sm.group(2) == '0',
+              sm.group(0) if sm else 'not found')
+        es, ig = lua_errors(text)
+        check(prefix + 'no-lua-errors', len(es) == 0,
+              '; '.join(es[:2]) + (' | 已忽略第三方插件报错 %d 行' % ig if ig else ''))
+
+    plain_expected = (
+        'fs-track-internal-ass', 'fs-extradata-has-style',
+        'fs-baseline-frame-ok', 'fs-baseline-no-fontsize',
+        'fs-scale-writes-ass-fontsize', 'fs-scale-neutralizes-sub-scale',
+        'fs-scale-folds-sub-font-size', 'fs-scale-enlarges-pos-subtitle',
+        'fs-scale-reset-restores',
+        'fs-size-step-writes-fontsize', 'fs-size-step-enlarges',
+        'fs-size-step-reversible',
+        'fs-nudge-keeps-pos-subtitle', 'fs-nudge-boundary-clamps',
+        'fs-toggle-off-clears-fontsize',
+        'fs-channel-off-uses-native-sub-scale',
+        'fs-channel-off-scale-ignored-by-pos', 'fs-toggle-on-restores',
+    )
+    ptext = run_fs('plain', fs_plain, 'plain')
+    fs_asserts('fs-plain-', ptext, plain_expected)
+
+    # Python 侧独立复核：解析探针 FS 行的像素数，不依赖探针自己的 PASS 判定
+    n_base = fs_n(ptext, '00-baseline')
+    n_s150 = fs_n(ptext, '01-scale150')
+    n_back = fs_n(ptext, '02-scale100')
+    n_plus = fs_n(ptext, '03-sizeplus8')
+    n_off = fs_n(ptext, '07-off-scale-no-visual')
+    n_on = fs_n(ptext, '09-toggle-on-restores')
+    check('fs-plain-visual-rows-present',
+          all(v is not None for v in (n_base, n_s150, n_back, n_plus, n_off, n_on)),
+          'base=%s scale150=%s back=%s plus=%s off=%s on=%s'
+          % (n_base, n_s150, n_back, n_plus, n_off, n_on))
+    if all(v is not None for v in (n_base, n_s150, n_back, n_plus, n_off, n_on)):
+        check('fs-plain-visual-scale-enlarges', n_s150 > n_base * 1.35,
+              '%d -> %d' % (n_base, n_s150))
+        check('fs-plain-visual-reset-restores', abs(n_back - n_base) < n_base * 0.08,
+              '%d -> %d' % (n_base, n_back))
+        check('fs-plain-visual-size-step-enlarges',
+              n_plus > n_base * 1.08 and n_plus < n_s150,
+              'base=%d plus=%d scale150=%d' % (n_base, n_plus, n_s150))
+        check('fs-plain-visual-channel-off-ignores',
+              abs(n_off - n_base) < n_base * 0.10,
+              'base=%d off=%d（复现原报障：sub-scale 变了但画面不变）'
+              % (n_base, n_off))
+        check('fs-plain-visual-toggle-on-restores', n_on > n_base * 1.35,
+              '%d -> %d' % (n_base, n_on))
+
+    bars_expected = (
+        'fs-bars-track-internal-ass', 'fs-bars-auto-detect-applied',
+        'fs-bars-shrinks-pos-subtitle', 'fs-bars-size-step-writes-fontsize',
+        'fs-bars-size-step-enlarges', 'fs-bars-size-step-saves-preset',
+        'fs-bars-size-step-reversible', 'fs-bars-off-clears-fontsize',
+        'fs-bars-off-restores-visual',
+    )
+    btext = run_fs('bars', fs_bars, 'bars', n_base or 0)
+    fs_asserts('fs-bars-', btext, bars_expected)
+    b_fit = fs_n(btext, '00-fit')
+    b_plus = fs_n(btext, '01-sizeplus8')
+    b_off = fs_n(btext, '03-fit-off')
+    check('fs-bars-visual-rows-present',
+          all(v is not None for v in (b_fit, b_plus, b_off)),
+          'fit=%s plus=%s off=%s plain-baseline=%s' % (b_fit, b_plus, b_off, n_base))
+    if all(v is not None for v in (b_fit, b_plus, b_off)) and n_base:
+        check('fs-bars-visual-auto-shrinks', b_fit < n_base * 0.95,
+              'plain=%d fit=%d' % (n_base, b_fit))
+        check('fs-bars-visual-size-step-enlarges', b_plus > b_fit * 1.05,
+              'fit=%d plus=%d' % (b_fit, b_plus))
+        check('fs-bars-visual-off-restores', abs(b_off - n_base) < n_base * 0.10,
+              'off=%d plain=%d' % (b_off, n_base))
+    # 预设缓存内容独立复核（探针在 Lua 侧已断言，这里再从 Python 读一次）
+    try:
+        preset_raw = open(PRESET_FILE, encoding='utf-8').read() \
+            if os.path.exists(PRESET_FILE) else ''
+    except OSError:
+        preset_raw = ''
+    check('fs-bars-preset-file-has-size', '"size"' in preset_raw,
+          preset_raw[:120])
 
     # ---- 6. 清理测试产物 ----
     for p in (STATE_FILE, PRESET_FILE, FONT_CACHE):

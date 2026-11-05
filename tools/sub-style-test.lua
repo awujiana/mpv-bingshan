@@ -2130,6 +2130,201 @@ restore52[#restore52 + 1] = r52d
 
 for i = #restore52, 1, -1 do restore52[i]() end
 
+--------------------------------------------------------------------
+-- T53 v1.0.9「内封定位字幕也能缩放 / 改字号」
+--   真机隔离实验（640x360 双行 ASS）：sub-scale 对 \pos 行完全无效，
+--   Fontsize 对两行都有效；force 下两者互不叠加，scale 下会双叠加。
+--   本组验证：① 只在「内封 ASS + 有样式表」时激活，外挂/无表零回归；
+--   ② 缩放/字号折成 Fontsize 且 sub-scale 归 1；③ ±1px 连续微调与边界；
+--   ④ nudge 边界不再静默；⑤ 黑边贴合改用 ASS 原始字号估算盒高并存预设。
+-- ⚠ 用独立函数包裹：Lua 5.1 单个函数最多 200 个活跃局部变量，主 chunk
+--   到 T52 已接近上限，T53 的局部变量必须放进自己的栈帧。
+--------------------------------------------------------------------
+function run_t53()
+local ASS_HEADER_53 = table.concat({
+    '[Script Info]',
+    'ScriptType: v4.00+',
+    'PlayResX: 384',
+    'PlayResY: 288',
+    '',
+    '[V4+ Styles]',
+    'Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour',
+    'Style: Default,Microsoft YaHei,21,&H00FFFFFF,&H000000FF',
+    'Style: Sign,WenQuanYi Micro Hei,14,&H00FFFFFF,&H000000FF',
+    '',
+    '[Events]',
+    'Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text',
+    '',
+}, '\n')
+
+local function setup53(overrides, ext)
+    local r = fresh_script_env()
+    env.opt_overrides = overrides or {}
+    set_tracks(false)
+    if ext then
+        env.props['current-tracks/sub'] = {codec = 'ass', image = false,
+                                           external = true, id = 1}
+    end
+    env.props['sub-font-size'] = 38       -- 基线：size_factor 的分母
+    env.props['sub-ass-style-overrides'] = nil
+    env.props['sub-ass-extradata'] = ASS_HEADER_53
+    env.props['sid'] = 1
+    env.props['track-list'] = {{type = 'sub', id = 1}}
+    load_script()
+    return r
+end
+
+local function fontsize53()
+    for _, e in ipairs(env.props['sub-ass-style-overrides'] or {}) do
+        local v = e:match('^Fontsize=(.+)$')
+        if v then return tonumber(v) end
+    end
+    return nil
+end
+
+local restore53 = {}
+
+-- ① 无偏差时**不写** Fontsize（否则会把多 style 的原始字号层级压平）
+local r53a = setup53()
+check('t53-no-fontsize-when-no-deviation', fontsize53() == nil,
+    tostring(fontsize53()))
+-- ② 整体缩放：1.5 × Default 21 = 31.5，且 sub-scale 归 1 / sub-font-size 乘倍率
+env.messages['scale']('1.5')
+check('t53-scale-writes-ass-fontsize', math.abs((fontsize53() or 0) - 31.5) < 0.01,
+    'Fontsize=' .. tostring(fontsize53()))
+check('t53-scale-neutralizes-sub-scale', env.props['sub-scale'] == 1,
+    tostring(env.props['sub-scale']))
+check('t53-scale-folds-into-sub-font-size',
+    math.abs((tonumber(env.props['sub-font-size']) or 0) - 57) < 0.01,
+    tostring(env.props['sub-font-size']))
+check('t53-scale-flash-names-fontsize',
+    (last_showtext() or ''):find('Fontsize', 1, true) ~= nil, last_showtext())
+-- ③ 字号覆盖：先撤掉上面的 ×1.5，57px / 基线 38 = 1.5 倍 → 同样的 31.5
+--    （缩放与字号本就相乘：不撤掉时 21×1.5×1.5=47.25，属预期行为）
+env.messages['scale']('1')
+env.messages['size']('57')
+check('t53-size-writes-ass-fontsize', math.abs((fontsize53() or 0) - 31.5) < 0.01,
+    'Fontsize=' .. tostring(fontsize53()))
+-- ④ 字号原样 + 缩放 ×1 ⇒ 清掉 Fontsize，回到 ASS 原始字号
+env.messages['size']('reset')
+env.messages['scale']('1')
+check('t53-reset-clears-fontsize', fontsize53() == nil, tostring(fontsize53()))
+-- ⑤ 位置微调到边界：明确提示而不是静默 clamp
+env.messages['pos']('150')
+env.messages['nudge']('5')
+check('t53-nudge-boundary-flash',
+    (last_showtext() or ''):find('位置边界', 1, true) ~= nil, last_showtext())
+check('t53-nudge-boundary-no-change', env.props['sub-pos'] == 150,
+    tostring(env.props['sub-pos']))
+-- ⑥ 定位字幕不响应 sub-pos 的说明
+env.messages['pos']('50')
+check('t53-pos-hint-for-positioned-subtitle',
+    (last_showtext() or ''):find('定位字幕保持原位', 1, true) ~= nil, last_showtext())
+restore53[#restore53 + 1] = r53a
+
+-- ⑦ ±1px 连续微调：从 size_baseline 起步，逐次递增、两次都生效
+local r53b = setup53()
+env.messages['size-step']('1')
+local f1 = fontsize53()
+local s1 = tonumber(env.props['sub-font-size'])
+env.messages['size-step']('1')
+local f2 = fontsize53()
+local s2 = tonumber(env.props['sub-font-size'])
+check('t53-size-step-writes-fontsize', f1 ~= nil and f2 ~= nil and f2 > f1,
+    string.format('%s → %s', tostring(f1), tostring(f2)))
+check('t53-size-step-continuous', s2 > s1,
+    string.format('%s → %s', tostring(s1), tostring(s2)))
+check('t53-size-step-flash', (last_showtext() or ''):find('+1', 1, true) ~= nil,
+    last_showtext())
+-- 点回基线字号：算出来的倍率正好 =1，此时不该留下 `Fontsize=20` 这种
+-- 无效覆盖（会把 ASS 多 style 的原始字号层级压平）。真机 E2E 在关闭黑边
+-- 贴合后发现过这个残留，故补一条回归断言。
+env.messages['size-step']('-1')
+env.messages['size-step']('-1')
+check('t53-size-step-back-to-baseline-clears-fontsize', fontsize53() == nil,
+    'Fontsize=' .. tostring(fontsize53()))
+-- 边界：先到上限再点 +
+env.messages['size']('96')
+env.messages['size-step']('1')
+check('t53-size-step-max-flash',
+    (last_showtext() or ''):find('边界', 1, true) ~= nil, last_showtext())
+-- 下限同理
+env.messages['size']('12')
+env.messages['size-step']('-1')
+check('t53-size-step-min-flash',
+    (last_showtext() or ''):find('边界', 1, true) ~= nil, last_showtext())
+restore53[#restore53 + 1] = r53b
+
+-- ⑧ 外挂 ASS / 无样式表：通道不激活，完全走旧的 sub-scale
+local r53c = setup53(nil, true)
+env.messages['scale']('1.5')
+check('t53-external-no-fontsize', fontsize53() == nil, tostring(fontsize53()))
+check('t53-external-keeps-sub-scale', env.props['sub-scale'] == 1.5,
+    tostring(env.props['sub-scale']))
+restore53[#restore53 + 1] = r53c
+local r53d = setup53()
+env.props['sub-ass-extradata'] = nil
+env.messages['scale']('1.5')
+check('t53-missing-extradata-no-channel', fontsize53() == nil,
+    tostring(fontsize53()))
+restore53[#restore53 + 1] = r53d
+
+-- ⑨ 运行时开关：关掉后清 Fontsize 并恢复原生 sub-scale
+local r53e = setup53()
+env.messages['scale']('1.5')
+env.messages['ass-fontsize-toggle']()
+check('t53-toggle-off-clears-fontsize', fontsize53() == nil, tostring(fontsize53()))
+check('t53-toggle-off-restores-sub-scale', env.props['sub-scale'] == 1.5,
+    tostring(env.props['sub-scale']))
+env.messages['ass-fontsize-toggle']()
+check('t53-toggle-on-restores-fontsize', fontsize53() ~= nil, tostring(fontsize53()))
+restore53[#restore53 + 1] = r53e
+
+-- ⑩ 菜单：±字号 / 通道开关 / 缩放提示都要在
+local r53f = setup53()
+env.messages['uosc-version']()
+env.messages['open-menu']()
+local data53 = jdec(uosc_command()[4])
+local values53 = {}
+for _, it in ipairs(data53.items or {}) do values53[#values53 + 1] = tostring(it.value) end
+local joined53 = table.concat(values53, '\n')
+check('t53-menu-has-size-step-plus', joined53:find('size-step 1', 1, true) ~= nil)
+check('t53-menu-has-size-step-minus', joined53:find('size-step -1', 1, true) ~= nil)
+check('t53-menu-has-ass-toggle', joined53:find('ass-fontsize-toggle', 1, true) ~= nil)
+check('t53-menu-scale-hint-positioned',
+    table.concat(values53, '\n'):find('size-step', 1, true) ~= nil)
+restore53[#restore53 + 1] = r53f
+
+-- ⑪ 黑边贴合：改用 ASS 原始字号/PlayResY 估算盒高，并把用户放大存进全局预设
+local r53g = bars_env(12, 12, 128)
+env.props['sub-ass-extradata'] = ASS_HEADER_53
+env.props['sub-font-size'] = 38
+load_script()
+env.events['file-loaded']()
+flush_timers()
+-- 通道激活时 sub-scale 被归 1，限缩倍率体现在 ASS Fontsize 里：
+--   Fontsize = Default 21 × scale ⇒ scale = Fontsize / 21
+-- unit = max_fontsize 21 × 1.2 × (200/288) = 17.5；usable = 200×0.06×0.9 = 10.8
+local scale53 = (fontsize53() or 0) / 21
+check('t53-barfit-uses-ass-unit', math.abs(scale53 - 0.617) < 0.02,
+    string.format('scale=%.4f Fontsize=%s', scale53, tostring(fontsize53())))
+check('t53-barfit-neutralizes-sub-scale', env.props['sub-scale'] == 1,
+    tostring(env.props['sub-scale']))
+check('t53-barfit-writes-shrunk-fontsize',
+    fontsize53() ~= nil and fontsize53() < 21, 'Fontsize=' .. tostring(fontsize53()))
+env.messages['size-step']('1')
+local preset53 = jdec(env.vfs['C:/fake-config/uosc-subtitle-style-preset.json'] or '{}')
+-- baseline.size=38（本组显式注入）⇒ 点一次 +1 = 39px
+check('t53-size-step-saves-global-preset', preset53.size == 39,
+    'preset.size=' .. tostring(preset53.size))
+check('t53-size-step-flash-saved',
+    (last_showtext() or ''):find('已存为全局预设', 1, true) ~= nil, last_showtext())
+restore53[#restore53 + 1] = r53g
+
+for i = #restore53, 1, -1 do restore53[i]() end
+end
+run_t53()
+
 for _, r in ipairs(restore50) do r() end
 restore51(); restore49(); restore48()
 restore13(); restore14()

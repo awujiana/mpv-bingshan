@@ -1,5 +1,5 @@
 ---- uosc_subtitle_style.lua —— 内封字幕样式快速切换（uosc 菜单）
--- @version: 1.0.8
+-- @version: 1.0.9
 -- ⚠ 上面这行版本标记由 script-modules/updater.lua 读取，用来判定本地版本：
 --   本地 >= 远端时不更新、绝不降级。改动功能时请同步递增版本号，否则
 --   自更新会认为本地仍是旧版（或误判成同版本反复「已更新」）。
@@ -67,6 +67,17 @@
 --   * ⚠ uosc 菜单 value 是**命令字符串**，uosc 用 mp.command() 执行；mpv 把 `#` 当
 --     注释起始符 ⇒ `color #FFFFFF` 的参数会被整段吞掉，退化成「恢复字幕原样」。
 --     凡含 #RRGGBB 的 value 必须用双引号包住参数。
+--   * 内封定位 ASS 的缩放/字号（v1.0.9）：带 \pos 的 explicit 事件对
+--     sub-pos / sub-scale / sub-font-size 全部豁免；唯一有效通道是
+--     sub-ass-style-overrides 的 Fontsize（改写 ASS 样式表）。脚本从
+--     sub-ass-extradata 读出原始 Style 行的 Fontsize 与 PlayResY，按
+--     「字号倍率 × 有效缩放」折成新的 Fontsize 写回，并把两轨 sub-scale 归 1
+--     以免 scale 模式下普通对白被双叠加。无任何偏差（字号=原样、缩放=×1、
+--     未贴合黑边）时**不写** Fontsize，保留 ASS 各 style 的原始大小层级。
+--     黑边贴合的限缩倍率同样并入 Fontsize，故内封 \pos 字幕也会缩进黑边；
+--     估算盒高改用 原始 Fontsize × 1.2 × 帧高/PlayResY，比 720p 等效估算更准。
+--     代价：Fontsize 是解码器级共享列表 ⇒ 缩放/字号在此模式下主/次轨同变；
+--     且样式表只有一个 Fontsize，多 style 的字幕会被统一到同一字号。
 --
 -- 入口（script-message）：
 --   open-menu       打开 uosc 菜单（未检测到 uosc 时降级为循环切换）
@@ -77,6 +88,7 @@
 --   nudge <±%>      以当前值为基准微调目标轨 sub-pos
 --   font <字体名|reset>     字体覆盖（名字含空格，参数会自动拼回）
 --   size <像素值|reset>     字号覆盖（720p 等效像素；ASS 下会启用 force）
+--   size-step <±像素>       字号 ±1px 连续微调（黑边贴合时自动存进全局预设）
 --   bold <on|off|reset>    粗体覆盖
 --   outline <粗细|reset>        描边粗细（sub-outline-size）
 --   outline-color <#RRGGBB|reset>  描边颜色（sub-outline-color）
@@ -88,6 +100,7 @@
 --   reset           恢复默认并清除记忆
 --   fix-override    把目标轨 sub-ass-override 设为 scale（位置/样式的前置条件）
 --   letterbox-toggle / letterbox-refresh  上下黑边贴合开关 / 立即重新检测
+--   ass-fontsize-toggle     内封定位 ASS 的缩放/字号通道开关
 
 local msg = require('mp.msg')
 local utils = require('mp.utils')
@@ -147,6 +160,27 @@ local o = {
     --      都会像用户截图那样被判「非彩色字幕，保持原样」（主色 #8B8B8B）。
     inspect_all_internal = true,  -- 统计全部内封轨；切换 sid 时对新轨重新检测；报告逐轨列出
     preset_all_internal = true,   -- 内封轨除「标准白字黑边」外一律套用黑白预设（不再靠颜色筛选）
+    -- v1.0.9「定位字幕也能缩放/改字号」：
+    --   真机实测（Dead-End...mkv 内封 ASS，sid=3）：sub-pos / sub-scale /
+    --   sub-font-size / sub-margin-y 全部改得动属性，画面像素却一字不差——
+    --   带 \pos 的 explicit ASS 事件对它们完全豁免；只有写进
+    --   sub-ass-style-overrides（ASS 样式表）的 FontName / Fontsize 才生效。
+    --   隔离实验（640x360 双行 ASS：\pos 顶部行 + 普通底部行，字高 16px）：
+    --     sub-scale=1.5          → 顶部 16 / 底部 25（只作用普通行）
+    --     Fontsize=36,scale=1    → 顶部 25 / 底部 25（两行都作用）
+    --     Fontsize=36,scale=1.5  → 顶部 25 / 底部 37（scale 模式下普通行双叠加！）
+    --     force + Fontsize=48 + scale=1.5 → 顶部 33 / 底部 25（各自恰好 1.5×，不叠加）
+    --   即 force 下两条通道天然互不干扰；scale 下必须把 sub-scale 归 1，
+    --   把缩放完全折进 Fontsize。原始字号从 sub-ass-extradata 的 Style 行读，
+    --   不用硬编码比例（内封轨实测 PlayResY=288、Default Fontsize=21）。
+    --   Fontsize 支持小数（24 → 24.5 时底部字高 16 → 17px），故 ±1px 逐次生效。
+    ass_fontsize = true,        -- 内封定位 ASS：把缩放/字号折进 ASS Fontsize
+    ass_fontsize_ratio = 0.5625, -- 兜底：读不到样式表时 720p px → ASS 单位（32px ↔ 18）
+    size_baseline = 32,         -- 兜底基准 px；±1px 实际优先从 mpv 基线字号起步
+    size_step = 1,              -- 菜单「字号 −/+」步长（720p 等效像素，可连续点）
+    size_min = 12,
+    size_max = 96,
+    size_step_saves_preset = true, -- 黑边贴合时 ±字号 一并存进全局预设缓存
 }
 options.read_options(o, 'uosc_subtitle_style')
 
@@ -155,6 +189,7 @@ local runtime = {
     override_all = o.style_override_all and true or false,
     include_gray = o.preset_include_gray and true or false,
     bar_fit = o.letterbox_fit and true or false,
+    ass_fontsize = o.ass_fontsize and true or false,
 }
 
 -- #RRGGBB → ASS 颜色 &H00BBGGRR（sub-ass-style-overrides 里用的格式，BGR 倒序）
@@ -459,6 +494,10 @@ local layout = nil
 -- 优先级高于 CN+JP 布局（黑边贴合要求主轨 100 / 次轨 0，天然分列上下）。
 local barfit = nil
 local barfit_gen = 0   -- 切文件后作废上个文件遗留的黑边检测定时器
+-- v1.0.9：内封 ASS 的样式表在 file-loaded 当刻可能尚未由 demuxer 填好，
+-- 首个字幕包到达后才能读到 sub-ass-extradata；置 true 时在 sub-text 观察器里
+-- 补一次 apply_all，把缩放/字号折进 Fontsize（只补一次，不反复重建）。
+local ass_pending = false
 local disable_barfit   -- 前向声明：adopt_external / set_pos / set_scale 要调用
 local refresh_barfit   -- 前向声明：file-loaded 与菜单消息要调用
 -- 检测报告文案缓存：黑边贴合要触发 OSD 微扰重绘，会用空白 show-text 覆盖
@@ -697,12 +736,108 @@ local function wants_force(t)
     return needs_force(t) and (t == cur() or style_equal(t, cur()))
 end
 
+--------------------------------------------------------------------
+-- v1.0.9 内封定位 ASS 的缩放/字号通道
+--
+-- mpv 的 sub-ass-extradata 给出 ASS 头（[Script Info] + [V4+ Styles]），
+-- 内封轨同样可读（示例 MKV 实测：PlayResY=288，Default Fontsize=21，
+-- 另三条 style 为 14/18/11）。有了原始字号，缩放就能做「相对原样」的
+-- 精确倍率，不必猜 720p↔PlayResY 的换算。
+--------------------------------------------------------------------
+
+-- 与后面 BAR_LINE_GAP 同值；这里必须前置声明，否则Lua 词法作用域会解析成全局 nil
+local ASS_LINE_GAP = 1.2
+
+-- 解析 ASS 头：PlayResY + 各 Style 的 Fontsize。
+-- base_fontsize 优先取名为 Default 的样式（主对白），否则取最大值。
+local function ass_style_info()
+    local extra = mp.get_property('sub-ass-extradata')
+    if type(extra) ~= 'string' or extra == '' then return nil end
+    local playres_y, default_fs, max_fs
+    for line in extra:gmatch('[^\r\n]+') do
+        local y = line:match('^%s*PlayResY%s*:%s*(%d+%.?%d*)')
+        if y then playres_y = tonumber(y) end
+        if line:match('^%s*Style%s*:') then
+            local name, fs = line:match(
+                '^%s*Style%s*:%s*([^,]-),%s*[^,]-,%s*(%d+%.?%d*)')
+            local n = fs and tonumber(fs) or nil
+            if n and n > 0 then
+                if not max_fs or n > max_fs then max_fs = n end
+                if name and name:lower() == 'default' then default_fs = n end
+            end
+        end
+    end
+    if not (default_fs or max_fs) then return nil end
+    return {playres_y = (playres_y and playres_y > 0) and playres_y or nil,
+            base_fontsize = default_fs or max_fs,
+            max_fontsize = max_fs}
+end
+
+-- 通道激活条件：内封 + ASS + 能读到样式表 + 运行时开关开。
+-- 外挂字幕 / SRT / 图形字幕一律沿用原来的 sub-scale / sub-font-size 通道；
+-- 单测桩不注入 sub-ass-extradata，故旧用例行为完全不变。
+local function ass_channel_active()
+    if not runtime.ass_fontsize then return false end
+    if track_info() ~= 'ass' then return false end
+    if track_origin() ~= '内封' then return false end
+    return ass_style_info() ~= nil
+end
+
+-- 目标轨真正应生效的缩放倍率（黑边贴合 > 双语布局 > 用户设定）
+local function effective_scale()
+    if barfit_active() then return barfit.scale end
+    local l = layout and layout[is_sec() and 'sec' or 'main']
+    if l and l.scale ~= nil then return l.scale end
+    return cur().scale
+end
+
+-- 折算出要写进 ASS 样式表的 Fontsize；返回 nil 表示**不写**（保留原样）。
+--   size_factor：用户字号相对 mpv 基线字号的变化倍率（只对普通对白生效的那一份）
+--   effective_scale：整体缩放 / 黑边限缩
+-- force 模式下两条通道互不干扰（真机实测）；scale 模式下 apply_all 会把
+-- sub-scale 归 1，避免普通对白被「sub-scale × Fontsize」双叠加。
+local function ass_fontsize_override(target_style)
+    if not ass_channel_active() then return nil end
+    local sc = effective_scale()
+    local base_px = baseline.size or o.size_baseline
+    local size_factor = 1
+    if target_style.size and base_px > 0 then
+        size_factor = target_style.size / base_px
+    end
+    -- 快路径：字号=原样且缩放=×1，不写 Fontsize
+    if not target_style.size and math.abs(sc - 1) < 0.001 then return nil end
+    local info = ass_style_info()
+    local base_units = info and info.base_fontsize
+        or (o.size_baseline * (o.ass_fontsize_ratio or 0.5625))
+    local factor = clamp(size_factor * sc, 0.02, 20)
+    -- 用户把字号点回基线、缩放点回 ×1（或黑边贴合刚被关掉）时，算出来正好
+    -- 等于 ASS 原始字号。此时写 `Fontsize=20` 是无效覆盖，还会把多 style 的
+    -- 原始字号层级压平成单一值 —— 必须清掉，让样式表回到原生状态。
+    if math.abs(factor - 1) < 0.001 then return nil end
+    return string.format('Fontsize=%g', base_units * factor)
+end
+
+-- 黑边贴合时按 ASS 原始字号估算「缩放=×1」时的字幕盒物理高度。
+-- 示例 MKV：21 × 1.2 × (2160/288) = 189px，黑条 120px ⇒ 自动限缩到 ~0.57。
+local function ass_unit_px(frame_h)
+    if not ass_channel_active() then return nil end
+    local info = ass_style_info()
+    if not info or not info.playres_y or not info.base_fontsize then return nil end
+    local px = info.max_fontsize * ASS_LINE_GAP * (frame_h / info.playres_y)
+    return px > 0 and px or nil
+end
+
 -- 写共享样式通道（font/size/bold + 列表）。target_style 为生效的那套样式
 local function apply_style_channel(target_style)
     if target_style.font or baseline.font then
         mp.set_property_native('sub-font', target_style.font or baseline.font)
     end
-    mp.set_property_native('sub-font-size', target_style.size or baseline.size)
+    -- v1.0.9：内封定位 ASS 通道激活时 sub-scale 被归 1（见 apply_all），
+    -- 普通对白的缩放改由这里并入 sub-font-size；\pos 定位字幕则由下面的
+    -- Fontsize 承担，两条通道各自恰好拿到同一个倍率，不会双叠加。
+    mp.set_property_native('sub-font-size',
+        (target_style.size or baseline.size) *
+        (ass_channel_active() and effective_scale() or 1))
     -- 主颜色：sub-color（force 的 COLORS 位）
     if target_style.color ~= nil then
         mp.set_property_native('sub-color', target_style.color)
@@ -736,6 +871,11 @@ local function apply_style_channel(target_style)
     -- 只在字段非 nil 时写入 ⇒ 「恢复字幕原样」自动清掉这些键，ASS 原色恢复。
     local want = {}
     if target_style.bold ~= nil then want[#want + 1] = 'Bold=' .. (target_style.bold and '1' or '0') end
+    -- v1.0.9：内封定位 ASS 的唯一缩放/字号通道。独立于 override_all ——
+    -- 后者只管颜色/字体是否覆盖 \pos 字幕，前者管字号，关掉颜色覆盖时
+    -- 用户依然要能放大定位字幕。
+    local fontsize_override = ass_fontsize_override(target_style)
+    if fontsize_override then want[#want + 1] = fontsize_override end
     if runtime.override_all then
         if target_style.font then
             want[#want + 1] = 'FontName=' .. target_style.font
@@ -744,9 +884,9 @@ local function apply_style_channel(target_style)
         if primary then want[#want + 1] = 'PrimaryColour=' .. primary end
         local outline_col = hex_to_ass_color(target_style.outline_color)
         if outline_col then want[#want + 1] = 'OutlineColour=' .. outline_col end
-        -- 字号/描边粗细不写：ASS 的 Fontsize/Outline 是脚本像素单位，与 mpv 的
-        -- 720p 等效像素不同，需要 PlayResY 换算（脚本拿不到），乱写会放大/缩小字幕。
-        -- 它们仍由 force + sub-font-size / sub-outline-size 作用于普通对白。
+        -- Fontsize 由上面的 ass_fontsize_override() 单独负责（需要读
+        -- sub-ass-extradata 里的原始字号与 PlayResY，不能拿 720p px 直接写）。
+        -- Outline 仍是脚本像素单位，只在 force + sub-outline-size 通道作用于普通对白。
     end
 
     local cur_list = mp.get_property_native('sub-ass-style-overrides') or {}
@@ -877,19 +1017,23 @@ local function apply_all(dance, rebuild)
     -- 用户手动设位置/缩放即 layout=nil，回到下面的「拥有才回写」。
     local function apply_track_layout(key, pos_prop_, scale_prop_)
         local st = state[key]
+        -- v1.0.9：内封定位 ASS 通道激活时，缩放全部折进 ASS Fontsize。
+        -- 两轨 sub-scale 都归 1，避免 scale 模式（override != force）下
+        -- 普通对白被「sub-scale × Fontsize」双叠加（真机 16px → 37px）。
+        local neutral = ass_channel_active() and 1 or nil
         if barfit_active() then
             -- 黑边贴合优先：主轨贴下黑边(100)、次轨贴上黑边(0)，两轨同一限缩倍率
             write_prop(pos_prop_, key == 'main' and PUSH_MAX or POS_MIN)
-            write_prop(scale_prop_, barfit.scale)
+            write_prop(scale_prop_, neutral or barfit.scale)
             return
         end
         local l = layout and layout[key]
         if l then
             write_prop(pos_prop_, l.pos)
-            write_prop(scale_prop_, l.scale ~= nil and l.scale or st.scale)
+            write_prop(scale_prop_, neutral or (l.scale ~= nil and l.scale or st.scale))
         else
             if st.pos_owned then write_prop(pos_prop_, st.pos) end
-            write_prop(scale_prop_, st.scale)
+            write_prop(scale_prop_, neutral or st.scale)
         end
     end
     apply_track_layout('main', 'sub-pos', 'sub-scale')
@@ -997,14 +1141,17 @@ local function detect_bars(img, dark_luma, step)
 end
 
 -- 由黑条比例算 per-file 覆盖层。纯计算，便于单测。
-local function compute_barfit(top_frac, bottom_frac, frame_h, font_size)
+-- ass_unit_px（v1.0.9）：内封定位 ASS 时按原始 Fontsize/PlayResY 算出的
+-- 「缩放=×1」字幕盒物理高度；缺省仍走 720p 等效估算。
+local function compute_barfit(top_frac, bottom_frac, frame_h, font_size, unit_px)
     local min_bar = math.max(0, o.letterbox_min_bar or 0.03)
     if top_frac < min_bar or bottom_frac < min_bar then return nil end
     local pad = math.max(0, math.min(0.5, o.letterbox_pad or 0.10))
     -- 上下黑条不等高时取较薄的一侧，保证两条字幕都放得下
     local bar_frac = math.min(top_frac, bottom_frac)
     local usable_px = frame_h * bar_frac * (1 - pad)
-    local unit = (font_size > 0 and font_size or 38) * BAR_LINE_GAP * (frame_h / 720)
+    local unit = (unit_px and unit_px > 0) and unit_px
+        or ((font_size > 0 and font_size or 38) * BAR_LINE_GAP * (frame_h / 720))
     if unit <= 0 then return nil end
     local scale = clamp(usable_px / unit, SCALE_MIN, SCALE_MAX)
     if scale > 1 then scale = 1 end   -- 黑条够宽时不放大字幕，只居中
@@ -1039,7 +1186,8 @@ refresh_barfit = function()
     local top, bottom = detect_bars(img, o.letterbox_dark_luma or 20,
         o.letterbox_sample_step or 8)
     local fit = top and compute_barfit(top, bottom, img.h,
-        mp.get_property_number('sub-font-size', 38))
+        baseline.size or mp.get_property_number('sub-font-size', 38),
+        ass_unit_px(img.h))
     if not fit then
         if barfit then
             disable_barfit()
@@ -1113,6 +1261,11 @@ local function set_pos(v, quiet)
             text = text .. string.format('（%s已避让至 %d%%）',
                 is_sec() and '主字幕' or '次字幕', pushed)
         end
+        -- 用户已确认「保留定位，微调仅普通字幕」：内封 \pos 字幕不跟着动，
+        -- 必须明说，否则又会被当成「点击没反应」。
+        if ass_channel_active() then
+            text = text .. ' ⚠ 内封 \\pos 定位字幕保持原位（请用字号/缩放调整）'
+        end
         flash(w and (text .. ' ⚠ ' .. w) or text)
     end
 end
@@ -1121,9 +1274,19 @@ local function set_scale(v, quiet)
     layout = nil   -- 用户手动设缩放 ⇒ 关闭本次文件的 CN+JP 自动布局
     disable_barfit()  -- 用户手动调缩放即让位，黑边贴合不再回写
     cur().scale = clamp(v, SCALE_MIN, SCALE_MAX)
-    apply_all(false)
+    -- v1.0.9：内封定位 ASS 的缩放靠 sub-ass-style-overrides/Fontsize 与
+    -- sub-font-size 落地，两者都没有 UPDATE flag，必须推动 configure_ass 重跑。
+    if ass_channel_active() then apply_all(true, true) else apply_all(false) end
     save_state()
-    if not quiet then flash(describe()) end
+    if not quiet then
+        local text = describe()
+        if ass_channel_active() then
+            local ov = ass_fontsize_override(cur())
+            text = text .. (ov and ('（定位字幕 ' .. ov .. '）')
+                or '（定位字幕保持原始字号）')
+        end
+        flash(text)
+    end
 end
 
 local function size_label(v)
@@ -2139,7 +2302,10 @@ local function build_items()
     items[#items + 1] = section('整体缩放（相对字幕原始大小）')
     for _, p in ipairs(SCALE_PRESETS) do
         items[#items + 1] = {
-            title = p.title, hint = '对白幕缩放，不含特效幕', icon = 'format_size',
+            title = p.title,
+            hint = ass_channel_active() and '内封 \\pos 定位字幕一并缩放（ASS Fontsize）'
+                or '对白幕缩放，不含特效幕',
+            icon = 'format_size',
             value = 'script-message-to uosc_subtitle_style scale ' .. string.format('%g', p.scale),
             active = (math.abs(cur().scale - p.scale) < 0.001),
         }
@@ -2177,6 +2343,32 @@ local function build_items()
             active = (cur().size ~= nil and math.abs(cur().size - p.size) < 0.001),
         }
     end
+    -- v1.0.9：「整体缩放」是倍率、无法精准定位到某一字号；±1px 让用户逐次
+    -- 把自动缩小后的字幕调到合适大小。keep_open 保证连点不关菜单。
+    items[#items + 1] = section(string.format('字号微调（±%gpx，可连续点击）', o.size_step))
+    items[#items + 1] = {
+        title = string.format('字号 −%gpx', o.size_step),
+        hint = string.format('从 %s 起算；当前 %s',
+            string.format('%gpx', cur().size or baseline.size or o.size_baseline),
+            cur().size and string.format('%gpx', cur().size) or '字幕原样'),
+        icon = 'remove', keep_open = true,
+        value = 'script-message-to uosc_subtitle_style size-step '
+            .. string.format('%g', -o.size_step),
+    }
+    items[#items + 1] = {
+        title = string.format('字号 +%gpx', o.size_step),
+        hint = barfit_active() and '黑边贴合时自动存进全局预设，重启后仍是这个字号'
+            or '精确定位字幕（\\pos）同样生效',
+        icon = 'add', keep_open = true,
+        value = 'script-message-to uosc_subtitle_style size-step '
+            .. string.format('%g', o.size_step),
+    }
+    items[#items + 1] = {
+        title = string.format('当前字号：%s',
+            cur().size and string.format('%gpx', cur().size) or '字幕原样'),
+        hint = string.format('范围 %g~%gpx；上限/下限会给出提示', o.size_min, o.size_max),
+        icon = 'straighten', selectable = false, muted = true, keep_open = true,
+    }
 
     items[#items + 1] = section('粗体')
     items[#items + 1] = {
@@ -2342,7 +2534,9 @@ local function build_items()
     end
     items[#items + 1] = {
         title = '上下黑边内显示字幕',
-        hint = bar_hint .. '（\\pos 定位字幕受 mpv 限制保持原位）',
+        hint = bar_hint .. (ass_channel_active()
+            and '（内封 \\pos 字幕按 ASS 原始字号缩进黑边）'
+            or '（\\pos 定位字幕受 mpv 限制保持原位）'),
         icon = runtime.bar_fit and 'check_box' or 'check_box_outline_blank',
         value = 'script-message-to uosc_subtitle_style letterbox-toggle',
         active = runtime.bar_fit,
@@ -2350,6 +2544,15 @@ local function build_items()
     items[#items + 1] = {
         title = '重新检测上下黑边', hint = '按当前画面重新扫描并立即贴合', icon = 'search',
         value = 'script-message-to uosc_subtitle_style letterbox-refresh',
+    }
+    items[#items + 1] = {
+        title = '内封定位字幕可缩放/改字号',
+        hint = runtime.ass_fontsize
+            and '已开启：\\pos 字幕走 ASS Fontsize，缩放/字号/黑边限缩都生效（主次轨同变）'
+            or '已关闭：回到 mpv 原生 sub-scale（\\pos 字幕不响应缩放）',
+        icon = runtime.ass_fontsize and 'check_box' or 'check_box_outline_blank',
+        value = 'script-message-to uosc_subtitle_style ass-fontsize-toggle',
+        active = runtime.ass_fontsize,
     }
     items[#items + 1] = {
         title = '恢复默认', hint = '主/次位置 100% · 缩放 ×1.00 · 样式全原样', icon = 'undo',
@@ -2365,7 +2568,7 @@ local function open_uosc_menu()
     local menu_props = {
         type = 'uosc_subtitle_style',
         title = '内封字幕样式',
-        footnote = '主色/字体/描边色含 \\pos 字幕一并生效；字号/描边粗细只作用于普通对白 · 修改即时保存',
+        footnote = '主色/字体/描边色含 \\pos 字幕一并生效；内封定位字幕的缩放/字号走 ASS Fontsize · 字号可 ±1px 微调并保存',
         search_style = 'on_demand',
         -- 根级 keep_open 会被所有 item 继承（uosc Menu.lua 第 217 行），
         -- 配合 refresh_menu 的 update-menu，点击后可连续调整并实时看到选中态。
@@ -2498,7 +2701,17 @@ mp.register_script_message('scale', function(v)
 end)
 mp.register_script_message('nudge', function(v)
     local n = tonumber(v)
-    if n then set_pos(cur().pos + n) else msg.warn('nudge: bad number: ' .. tostring(v)) end
+    if not n then msg.warn('nudge: bad number: ' .. tostring(v)) return end
+    local before = cur().pos
+    local target = clamp(before + n, POS_MIN, POS_MAX)
+    -- 旧版把「已在 0% / 150% 边界」的点击喂给 clamp 后静默吞掉，用户看到的就是
+    -- 「下移 5% 点了没反应」。这里必须给出明确反馈。
+    if math.abs(target - before) < 0.001 then
+        flash(string.format('%s已在位置边界（%d%%，范围 %d~%d），无法继续%s',
+            track_name(), before, POS_MIN, POS_MAX, n > 0 and '下移' or '上移'))
+        return
+    end
+    set_pos(target)
 end)
 mp.register_script_message('font', function(...)
     local v = table.concat({...}, ' '):gsub('^%s+', ''):gsub('%s+$', '')
@@ -2508,6 +2721,39 @@ mp.register_script_message('size', function(v)
     if v == nil or v == 'reset' then set_size(nil) return end
     local n = tonumber(v)
     if n then set_size(n) else msg.warn('size: bad number: ' .. tostring(v)) end
+end)
+-- v1.0.9 字号 ±1px 连续微调：「字幕原样」时以 baseline.size（mpv 当前的
+-- sub-font-size，默认常为 55）起步，而不是脚本的 size_baseline=32——
+-- 否则第一次点「+1」会跳到 33px，相对真实基准反而是**缩小**。
+-- 之后每次点击都以当前值为基准，可连续点到 size_min/size_max。
+-- 黑边贴合生效时顺手写进全局预设缓存：用户嫌自动缩小后的字太小，点几下
+-- 放大即可，下一次（以及其它黑边视频）载入时预设会把这个字号还回来。
+mp.register_script_message('size-step', function(v)
+    local d = tonumber(v)
+    if not d then msg.warn('size-step: bad number: ' .. tostring(v)) return end
+    local base = cur().size or baseline.size or o.size_baseline
+    local nv = clamp(base + d, o.size_min or 12, o.size_max or 96)
+    if math.abs(nv - base) < 0.001 then
+        flash(string.format('%s字号已在边界（%gpx，范围 %g~%g）',
+            track_name(), base, o.size_min or 12, o.size_max or 96))
+        return
+    end
+    -- quiet：下面按是否写入预设缓存拼一条完整提示，避免出现两次 flash
+    set_size(nv, true)
+    local text = string.format('%s字号：%gpx（%s%g）', track_name(), nv,
+        d > 0 and '+' or '−', math.abs(d))
+    if barfit_active() and o.size_step_saves_preset then
+        preset.size = nv
+        save_preset()
+        text = text .. ' · 已存为全局预设'
+    end
+    flash(text)
+end)
+mp.register_script_message('ass-fontsize-toggle', function()
+    runtime.ass_fontsize = not runtime.ass_fontsize
+    apply_all(true, true)
+    flash(runtime.ass_fontsize and '内封定位字幕缩放/字号通道：开（\\pos 字幕可缩放）'
+        or '内封定位字幕缩放/字号通道：关（回到原生 sub-scale）')
 end)
 mp.register_script_message('bold', function(v)
     if v == 'on' or v == '1' or v == 'yes' then set_bold(true)
@@ -2643,6 +2889,15 @@ mp.observe_property('secondary-sub-scale', 'number',
 -- inspect_armed：首检(inspect_delay)跑过才触发，避免对白刚渲染就提前检测、抢在 inspect_delay
 -- 之前（守住「先看到原字幕、再转黑白」的时序）。inspect_done：检测成功后不再随每句对白重跑。
 mp.observe_property('sub-text', 'string', function(_, val)
+    -- v1.0.9：file-loaded 当刻 demuxer 可能还没填好 sub-ass-extradata，
+    -- 首个字幕包到达后补一次应用，让缩放/字号真正折进 Fontsize（只补一次）。
+    if ass_pending and type(val) == 'string' and val ~= ''
+        and ass_channel_active() then
+        ass_pending = false
+        apply_all(false)
+        nudge_reconfigure()
+        if runtime.bar_fit and barfit then refresh_barfit() end
+    end
     if inspect_done or not inspect_armed then return end
     local is_empty = not (type(val) == 'string' and val ~= '')
     local new_segment = (not is_empty) and sub_text_was_empty
@@ -2688,6 +2943,7 @@ mp.register_event('file-loaded', function()
     inspect_total = 0           -- 新文件的累计尝试额度（硬上限，见 INSPECT_TOTAL_CAP）
     sub_text_was_empty = true   -- 新文件首句对白视为「新一段」
     inspect_armed = false       -- 首检跑过才允许 sub-text 观察器触发，避免提前于 inspect_delay
+    ass_pending = runtime.ass_fontsize  -- v1.0.9：等 sub-ass-extradata 就绪后补应用
     local gen = inspect_gen
     mp.add_timeout(o.inspect_delay or 1.2, function()
         inspect_armed = true

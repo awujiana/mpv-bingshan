@@ -106,7 +106,7 @@ PS：自行编辑配置文件时，注意编码格式应为 UTF-8，换行符为
   且有 17 个本地脚本根本不在 wiki 中。
 - **本 README 的核对内容即为差异清单**，后续新增/升级脚本时请同步更新本节。
 
-### 内封字幕样式切换（scripts/uosc_subtitle_style.lua，主/次字幕分轨，v1.0.8）
+### 内封字幕样式切换（scripts/uosc_subtitle_style.lua，主/次字幕分轨，v1.0.9）
 
 把字幕在 **原位 / 中下 / 中部 / 中上 / 顶部** 之间切换，可整体缩放、改字体、字号、粗体、
 **描边粗细与描边颜色**；**主字幕（sid）与次字幕（secondary-sid）分轨独立调整**，
@@ -125,8 +125,25 @@ PS：自行编辑配置文件时，注意编码格式应为 UTF-8，换行符为
   「是否彩色 / 是否灰阶」这种窄颜色判据（灰色 `#8B8B8B` 报障的彻底解决）。
   外挂字幕、标准白字、双语双轨保持原样的既有规则不变；conf 的
   `inspect_all_internal` / `preset_all_internal` 可分别关闭。
+- **v1.0.9**：修好「点下移 / 整体缩放都没反应，只有换字体有效」。真机查证带 `\pos` 的
+  **内封** ASS 对 `sub-pos` / `sub-scale` / `sub-font-size` **全部豁免**，只有改写 ASS
+  样式表才有效。现在这类字幕的**缩放与字号折成 `sub-ass-style-overrides/Fontsize`**
+  （基准字号优先从 `sub-ass-extradata` 的 `Style:` / `PlayResY` 读取，不再硬编码 720p 比例），
+  并把两轨 `sub-scale` 归 1，避免 `scale` 模式下普通对白被「sub-scale × Fontsize」双叠加；
+  `ScaleX/ScaleY` 实测在 125%/150% 会让字幕直接消失，故不用作倍率通道。
+  - **新增字号 ±1px 连续微调**（菜单「字号 −1px / +1px」，`size-step ±1`），
+    从 mpv 当前基线字号起步、每次点击以当前值为基准，解决「整体缩放不能精准放大字号」；
+    到 `size_min/size_max` 边界给明确提示。
+  - **上下黑边视频**：限缩倍率同样并入 `Fontsize`，所以内封 `\pos` 字幕也会自动缩小到
+    匹配黑边的单行大小（位置仍保持原位）；嫌小就点「字号 +1px」，黑边贴合时会
+    **自动存进全局预设缓存**（`size_step_saves_preset`），其它黑边视频复用同一字号。
+  - **位置微调到边界不再静默失效**：`nudge` 到 `0%`/`150%` 会明确提示；
+    带 `\pos` 的定位字幕保持原位，位置改动时 OSD 明说「请用字号/缩放调整」。
+  - 「其它 → 内封定位字幕可缩放/改字号」(`ass-fontsize-toggle`) 可一键退回原生通道；
+    关闭时真机能复现原报障（`sub-scale=1.5` 但 `\pos` 字幕画面纹丝不动）。
+
   > 若你的 mpv 仍显示旧的「非彩色字幕，保持原样」文案，说明内存里跑的还是被自更新器
-  > 降级过的 v1.0.5 —— **重启播放器**即可加载 v1.0.8。
+  > 降级过的 v1.0.5 —— **重启播放器**即可加载 v1.0.9。
 
 > 架构细节（数据模型、mpv 能力矩阵、应用引擎、字体枚举、测试体系）见
 > [`docs/uosc-subtitle-style-architecture.md`](docs/uosc-subtitle-style-architecture.md)。
@@ -141,7 +158,7 @@ PS：自行编辑配置文件时，注意编码格式应为 UTF-8，换行符为
   style-preset <big-bold|original|sync-other> | open-fonts | rescan-fonts | reset | fix-override |
   preset-apply | preset-save | preset-reset | preset-toggle-colored | preset-toggle-dual |
   preset-toggle-enabled | inspect | toggle-gray | toggle-all |
-  letterbox-toggle | letterbox-refresh`
+  size-step <±px> | ass-fontsize-toggle | letterbox-toggle | letterbox-refresh`
 
 > ⚠ uosc 菜单项的 `value` 由 `mp.command()` 解析，裸 `#RRGGBB` 会被当成注释起始符吞掉参数
 > （表现为点黑色后提示「恢复字幕原样」）。脚本生成的颜色命令一律写成 `"#RRGGBB"`。
@@ -157,6 +174,7 @@ PS：自行编辑配置文件时，注意编码格式应为 UTF-8，换行符为
 | 位置 / 缩放 | ✅ 完全独立 | `sub-pos/scale` 与 `secondary-sub-pos/scale`；两轨自动避让不重叠 |
 | 字体 / 字号 / 描边（对白幕） | ✅ 仅目标轨 | `sub-ass-override=force` + `sub-font`/`sub-font-size`/`sub-outline-size`/`sub-outline-color`（force 的选择性覆盖位只作用于该轨） |
 | 字体 / 主色 / 描边色（`\pos` 字幕） | ⚠ 共享 | `sub-ass-style-overrides` 的 `FontName` / `PrimaryColour` / `OutlineColour`，改写 ASS 样式表本身；`force` 对带 `\pos` 的 explicit 事件**完全无效** |
+| 缩放 / 字号（内封 `\pos` 字幕，v1.0.9） | ⚠ 共享 | `sub-ass-style-overrides/Fontsize` 改写 ASS 样式表；倍率同时折进 `sub-font-size` 供普通对白使用，两轨 `sub-scale` 归 1 防止双叠加 |
 | 粗体 | ⚠ 共享 | `sub-ass-style-overrides` 列表 `Bold=`（列表是解码器级共享，mpv 无分轨粗体通道） |
 | 上下黑边内的边距 | ⚠ 共享 | `sub-margin-y` 为 INT 且全局共享，贴合时写入、关闭/切文件时还原基准值 |
 
@@ -220,7 +238,9 @@ PS：自行编辑配置文件时，注意编码格式应为 UTF-8，换行符为
   （阈值 `colored_threshold`、检测时机 `inspect_delay`、报告时长 `report_ms`、
   避让间距 `pos_min_gap`、force 重建延迟 `rebuild_delay`、预设各项 `preset_*`；
   v1.0.6 的 `style_override_all` / `preset_include_gray`；v1.0.7 的 `letterbox_*` 六项；
-  v1.0.8 的 `inspect_all_internal` / `preset_all_internal`）。
+  v1.0.8 的 `inspect_all_internal` / `preset_all_internal`；
+  v1.0.9 的 `ass_fontsize` / `ass_fontsize_ratio` / `size_baseline` / `size_step` /
+  `size_min` / `size_max` / `size_step_saves_preset`）。
 - 已知边界：像素采样要求字幕正在显示且未处于我方 force 配色；带 `\pos` 的 signs 不参与采样；
   样式表覆盖是共享通道，需要严格分轨时用 `toggle-all` 关闭。
 
@@ -242,20 +262,24 @@ PS：自行编辑配置文件时，注意编码格式应为 UTF-8，换行符为
 - **菜单**：「其它 → 上下黑边内显示字幕」(`letterbox-toggle`)、「重新检测上下黑边」
   (`letterbox-refresh`)；conf 里 `letterbox_fit=no` 可默认关闭。
 - **硬边界**：带 `\pos` 的 explicit ASS 事件对 `sub-pos` / `sub-scale` / `sub-margin-y` 全部豁免，
-  **保持原位**；强行 `strip` 会丢定位标签，脚本不重写事件。窗口 letterbox 仍由 mpv 原生处理。
+  **保持原位**；强行 `strip` 会丢定位标签，脚本不重写事件。v1.0.9 起限缩倍率会一并写入
+  ASS `Fontsize`，因此这类字幕**尺寸会跟着缩小**、但位置不动。窗口 letterbox 仍由 mpv 原生处理。
   真机 E2E 用双轨 SRT 夹具验证：贴合前画面区字幕差分 `mid=653`，贴合后 `mid=0`，
   上/下黑边分别 `230` / `319`，即画面主体完全不被遮挡。
 
 **测试**
-- `../luajit.exe tools/sub-style-test.lua` —— **259 项单测**（含字体解析器合成 sfnt/TTC 字节流、
+- `../luajit.exe tools/sub-style-test.lua` —— **290 项单测**（含字体解析器合成 sfnt/TTC 字节流、
   位置避让、稳态编辑不重建、ASS 解析/像素采样/饱和度阈值、灰阶识别与 `\pos` 样式表覆盖、
   预设读写与开关、双语跳过与开关、避让间距/报告时长可配、菜单项、
   T48–T51 上下黑边检测/布局/让位/菜单、
-  T52 全内封轨检查：报告统计 / 切轨重检 / 灰色识别关闭仍套用 / 白字·外挂·关开关保持旧行为）
+  T52 全内封轨检查：报告统计 / 切轨重检 / 灰色识别关闭仍套用 / 白字·外挂·关开关保持旧行为；
+  T53 内封定位 ASS 的 Fontsize 通道：`sub-ass-extradata` 解析 / 缩放与字号折算 /
+  `sub-scale` 归 1 / ±1px 连续微调与边界 / 点回基线清掉无效覆盖 /
+  外挂与无样式表零回归 / 运行时开关 / 黑边按 ASS 原始字号估算 / 放大存全局预设）
 - `python tools/sub-style-conf-verify.py` —— conf 静态门禁：按 mpv 解析语义复算
   `script-opts/uosc_subtitle_style.conf`（键集合与脚本 o 表对齐、布尔/数值/颜色格式、
   **行尾注释检测**——mpv 不支持 `key=value  # 注释`，会被整段吃进值里）
-- `/c/Python314/python.exe tools/sub-style-e2e.py` —— 真机 E2E 五组判据：
+- `/c/Python314/python.exe tools/sub-style-e2e.py` —— 真机 E2E 判据：
   ① 双字幕轨探针 + 视觉波段判据（分轨位置/字体/字号互不影响，含 `FontName` 写入共享
      样式表与 `toggle-all` 清除覆盖）；
   ② 字幕流连续性回归（多句 fixture，编辑后逐句校验仍正常跳句）；
@@ -268,12 +292,20 @@ PS：自行编辑配置文件时，注意编码格式应为 UTF-8，换行符为
      Python 侧独立复核 `BASE mid=653 → FIT mid=0`，上下黑边各出现一条字幕；
   ⑥ v1.0.8 示例视频真机复现（`--pause=yes --start=00:12:30`，`persist=no` 隔离状态）：
      `INTERNAL_TRACKS=42`、`SID=3`、`SUB_COLOR=#FFFFFFFF`、`ASS_OVERRIDE=force`、
-     `SHARED_PRIMARY=true` —— 灰色内封字幕与带 `\pos` 的顶部字幕一并转黑白
+     `SHARED_PRIMARY=true` —— 灰色内封字幕与带 `\pos` 的顶部字幕一并转黑白；
+  ⑦ v1.0.9 内封 `\pos` ASS 缩放/字号：由 `sub-style-mkv-fixture.py` **纯 Python 直接写最小
+     Matroska**（MJPEG 单帧视频 + 内封 `S_TEXT/ASS` 轨，不依赖 ffmpeg、不需要 4.1GB 示例视频），
+     plain / bars 两轮共 27 条探针断言 + Python 侧独立像素复核。真机数据：
+     `Fontsize=30`、`sub-scale=1`、上字幕带像素 `1509 → 2660`（缩放 ×1.5）；
+     `size-step +8` → `1846`；关通道后 `sub-scale=1.5` 但画面仍 `1509`（复现原报障）；
+     黑边贴合 `Fontsize=18`、像素 `1509 → 1265`，点放大写入全局预设、关贴合后还原 `1508`
 - 探针 `tools/sub-style-probe.lua` / `sub-style-probe-stream.lua` /
   `sub-style-probe-preset.lua` / `sub-style-probe-preset-save.lua` /
-  `sub-style-probe-pos.lua` / `sub-style-probe-bars.lua`；
+  `sub-style-probe-pos.lua` / `sub-style-probe-bars.lua` /
+  `sub-style-probe-fontsize.lua`；
   fixture `tools/sub-style-smoke{,-sec,-multi,-colored}.ass` /
-  `sub-style-smoke-pos-gray.ass` / `sub-style-smoke-bars-{main,sec}.srt`
+  `sub-style-smoke-pos-gray.ass` / `sub-style-smoke-bars-{main,sec}.srt` /
+  `sub-style-mkv-fixture.py`（生成内封 ASS MKV）
 - E2E 会按日志标签隔离 `uosc_danmaku` / `uosc_staff_credits` / `dynamic_crop` 等第三方插件的
   无关 Lua error；被测脚本与探针自身的报错仍判 FAIL。
 - ⚠ E2E 视觉判据依赖 Pillow：PATH 里的 managed python 未装，请用系统 Python
