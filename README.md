@@ -106,7 +106,7 @@ PS：自行编辑配置文件时，注意编码格式应为 UTF-8，换行符为
   且有 17 个本地脚本根本不在 wiki 中。
 - **本 README 的核对内容即为差异清单**，后续新增/升级脚本时请同步更新本节。
 
-### 内封字幕样式切换（scripts/uosc_subtitle_style.lua，主/次字幕分轨，v1.0.7）
+### 内封字幕样式切换（scripts/uosc_subtitle_style.lua，主/次字幕分轨，v1.0.8）
 
 把字幕在 **原位 / 中下 / 中部 / 中上 / 顶部** 之间切换，可整体缩放、改字体、字号、粗体、
 **描边粗细与描边颜色**；**主字幕（sid）与次字幕（secondary-sid）分轨独立调整**，
@@ -118,6 +118,15 @@ PS：自行编辑配置文件时，注意编码格式应为 UTF-8，换行符为
   signs 也能换字体、转黑白**；主颜色候选补入**黑色**与灰阶；菜单点击后保持打开并刷新选中态。
 - **v1.0.7**：检测到**视频内嵌上下黑条**时，默认把主字幕放进下黑边、次字幕放进上黑边，
   **不遮挡画面内容**；菜单「其它 → 上下黑边内显示字幕」可关闭。
+- **v1.0.8**：**所有的内封字幕都要被检查**。旧检测只看当前选中的一条轨，一个文件成功检测
+  一次后就不再重检——真机示例 MKV 有 **42 条内封字幕轨**，切换过去时其余 41 条从未被检查。
+  现在报告列出「内封字幕轨：共 N 条，已检查 M 条」，切换 `sid`/`secondary-sid` 到未检查过的
+  内封轨会自动重新检测；内封字幕除「标准白字黑边」外一律套用黑白预设，不再只靠
+  「是否彩色 / 是否灰阶」这种窄颜色判据（灰色 `#8B8B8B` 报障的彻底解决）。
+  外挂字幕、标准白字、双语双轨保持原样的既有规则不变；conf 的
+  `inspect_all_internal` / `preset_all_internal` 可分别关闭。
+  > 若你的 mpv 仍显示旧的「非彩色字幕，保持原样」文案，说明内存里跑的还是被自更新器
+  > 降级过的 v1.0.5 —— **重启播放器**即可加载 v1.0.8。
 
 > 架构细节（数据模型、mpv 能力矩阵、应用引擎、字体枚举、测试体系）见
 > [`docs/uosc-subtitle-style-architecture.md`](docs/uosc-subtitle-style-architecture.md)。
@@ -210,7 +219,8 @@ PS：自行编辑配置文件时，注意编码格式应为 UTF-8，换行符为
 - **配置文件**：`script-opts/uosc_subtitle_style.conf` 带中文注释，覆盖上述全部行为
   （阈值 `colored_threshold`、检测时机 `inspect_delay`、报告时长 `report_ms`、
   避让间距 `pos_min_gap`、force 重建延迟 `rebuild_delay`、预设各项 `preset_*`；
-  v1.0.6 的 `style_override_all` / `preset_include_gray`；v1.0.7 的 `letterbox_*` 六项）。
+  v1.0.6 的 `style_override_all` / `preset_include_gray`；v1.0.7 的 `letterbox_*` 六项；
+  v1.0.8 的 `inspect_all_internal` / `preset_all_internal`）。
 - 已知边界：像素采样要求字幕正在显示且未处于我方 force 配色；带 `\pos` 的 signs 不参与采样；
   样式表覆盖是共享通道，需要严格分轨时用 `toggle-all` 关闭。
 
@@ -237,10 +247,11 @@ PS：自行编辑配置文件时，注意编码格式应为 UTF-8，换行符为
   上/下黑边分别 `230` / `319`，即画面主体完全不被遮挡。
 
 **测试**
-- `../luajit.exe tools/sub-style-test.lua` —— 246 项单测（含字体解析器合成 sfnt/TTC 字节流、
+- `../luajit.exe tools/sub-style-test.lua` —— **259 项单测**（含字体解析器合成 sfnt/TTC 字节流、
   位置避让、稳态编辑不重建、ASS 解析/像素采样/饱和度阈值、灰阶识别与 `\pos` 样式表覆盖、
   预设读写与开关、双语跳过与开关、避让间距/报告时长可配、菜单项、
-  T48–T51 上下黑边检测/布局/让位/菜单）
+  T48–T51 上下黑边检测/布局/让位/菜单、
+  T52 全内封轨检查：报告统计 / 切轨重检 / 灰色识别关闭仍套用 / 白字·外挂·关开关保持旧行为）
 - `python tools/sub-style-conf-verify.py` —— conf 静态门禁：按 mpv 解析语义复算
   `script-opts/uosc_subtitle_style.conf`（键集合与脚本 o 表对齐、布尔/数值/颜色格式、
   **行尾注释检测**——mpv 不支持 `key=value  # 注释`，会被整段吃进值里）
@@ -254,7 +265,10 @@ PS：自行编辑配置文件时，注意编码格式应为 UTF-8，换行符为
   ④ v1.0.6 报障回归：灰色 `#8B8B8B` 转白、带 `\pos` 的顶部字幕变色、
      菜单点黑色 `"#000000"` 不被注释吞掉、字体写入样式表；
   ⑤ v1.0.7 上下黑边贴合：双轨 SRT + 合成 `640×360` 上下各 `24px` 黑条，探针 15 断言 +
-     Python 侧独立复核 `BASE mid=653 → FIT mid=0`，上下黑边各出现一条字幕
+     Python 侧独立复核 `BASE mid=653 → FIT mid=0`，上下黑边各出现一条字幕；
+  ⑥ v1.0.8 示例视频真机复现（`--pause=yes --start=00:12:30`，`persist=no` 隔离状态）：
+     `INTERNAL_TRACKS=42`、`SID=3`、`SUB_COLOR=#FFFFFFFF`、`ASS_OVERRIDE=force`、
+     `SHARED_PRIMARY=true` —— 灰色内封字幕与带 `\pos` 的顶部字幕一并转黑白
 - 探针 `tools/sub-style-probe.lua` / `sub-style-probe-stream.lua` /
   `sub-style-probe-preset.lua` / `sub-style-probe-preset-save.lua` /
   `sub-style-probe-pos.lua` / `sub-style-probe-bars.lua`；

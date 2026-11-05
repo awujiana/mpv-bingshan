@@ -1,5 +1,5 @@
 ---- uosc_subtitle_style.lua —— 内封字幕样式快速切换（uosc 菜单）
--- @version: 1.0.7
+-- @version: 1.0.8
 -- ⚠ 上面这行版本标记由 script-modules/updater.lua 读取，用来判定本地版本：
 --   本地 >= 远端时不更新、绝不降级。改动功能时请同步递增版本号，否则
 --   自更新会认为本地仍是旧版（或误判成同版本反复「已更新」）。
@@ -140,6 +140,13 @@ local o = {
     letterbox_pad = 0.10,       -- 字幕盒相对黑条高度留 10% 余量
     letterbox_sample_step = 8,  -- 列采样步长（4K 下每 8 列取 1 像素，控制耗时）
     letterbox_delay = 0.6,      -- 首检延迟（秒，相对 inspect_delay 之后，等画面稳定）
+    -- v1.0.8「所有的内封字幕都要被检查」：
+    --   ① 旧检测只看当前选中的一条轨，且成功一次就 inspect_done=true，
+    --      文件里其它内封轨（简/繁/英/注释 signs 轨）永远不会被检查。
+    --   ② 套用判据只看「是否彩色 / 是否灰阶」，任何没落进这两个窄区间的内封配色
+    --      都会像用户截图那样被判「非彩色字幕，保持原样」（主色 #8B8B8B）。
+    inspect_all_internal = true,  -- 统计全部内封轨；切换 sid 时对新轨重新检测；报告逐轨列出
+    preset_all_internal = true,   -- 内封轨除「标准白字黑边」外一律套用黑白预设（不再靠颜色筛选）
 }
 options.read_options(o, 'uosc_subtitle_style')
 
@@ -158,14 +165,16 @@ local function hex_to_ass_color(hex)
 end
 
 -- 灰阶判定：饱和度低于彩色阈值，且亮度既不是黑也不是白（#8B8B8B → true）。
--- 像素采样会有抗锯齿/明暗偏差，故用区间而非等值比较；白字(≥220)与纯黑(<40)不算。
+-- 像素采样会有抗锯齿/明暗偏差，故用区间而非等值比较。v1.0.8 把区间放宽到
+-- [30, 235]：深灰 #2A2A2A / 浅灰 #EAEAEA 这类「看着像黑白但仍偏灰」的内封字幕
+-- 也要能被识别，不再因阈值卡在 40/220 而被判「非彩色，保持原样」。
 local function is_gray_hex(hex)
     local rr, gg, bb = tostring(hex or ''):match('^#(%x%x)(%x%x)(%x%x)$')
     if not rr then return false end
     local r2, g2, b2 = tonumber(rr, 16), tonumber(gg, 16), tonumber(bb, 16)
     local lum = (r2 + g2 + b2) / 3
     local sat = math.max(r2, g2, b2) - math.min(r2, g2, b2)
-    return sat < (o.colored_threshold or 40) and lum >= 40 and lum <= 220
+    return sat < (o.colored_threshold or 40) and lum >= 30 and lum <= 235
 end
 
 -- 菜单项 value 是命令字符串（uosc 用 mp.command 执行）。mpv 命令解析把 # 当注释符，
@@ -473,6 +482,9 @@ local inspect_armed = false     -- 首检(inspect_delay)是否已跑过；跑过
 local inspect_total = 0
 local INSPECT_TOTAL_CAP = 100
 local sub_text_was_empty = true -- 上一帧 sub-text 是否为空（用于识别「新一段对白开始」）
+-- v1.0.8：按轨记录检测结果，使「文件里每一条内封字幕轨」都至少被检查一次。
+-- key = track-list 的 sub 轨 id，value = 该轨是否已成功检出（nil = 尚未检查）。
+local inspected_internal = {}
 local run_inspect
 
 local function write_prop(prop, value)
@@ -1648,15 +1660,26 @@ end
 local preset = preset_from_options()
 local preset_factory = preset_from_options()
 
+-- 前向声明：全轨枚举 / 标准黑白判定的实现放在后面的「样式检测」区，
+-- 但 needs_preset（预设区）要先引用；Lua 局部变量作用域从声明之后才开始，
+-- 不占位会解析成全局 nil（踩过：attempt to call global 'current_internal_id'）。
+local current_internal_id, is_standard_black_white
+
 -- 判定「需要转成黑白样式」：
 --   only_colored=false → 一律套用；
 --   彩色字幕 → 套用；
---   灰色字幕（饱和度为 0 但既不是白也不是黑，如 Netflix 内封 ASS 的 #8B8B8B）→ 也套用。
--- 旧逻辑只看饱和度，灰色会被当成「已经是标准黑白字幕」而跳过，正是用户报障的现象。
+--   灰色字幕（饱和度为 0 但既不是白也不是黑，如 Netflix 内封 ASS 的 #8B8B8B）→ 也套用；
+--   v1.0.8：内封字幕轨除「标准白字黑边」外一律套用 —— 不再依赖单一颜色判据，
+--   任何没落进「彩色 / 灰阶」窄区间的内封配色也不会被漏掉。
+--   外挂字幕仍走上面的颜色判据（其样式来自文件解析，用户往往有意保留配色）。
 local function needs_preset(info)
     if not preset.only_colored then return true end
     if info.colored then return true end
     if runtime.include_gray and is_gray_hex(info.color) then return true end
+    if o.preset_all_internal and current_internal_id()
+        and not is_standard_black_white(info) then
+        return true
+    end
     return false
 end
 
@@ -1815,6 +1838,47 @@ is_colored_hex = function(hex)
     return (math.max(rr, gg, bb) - math.min(rr, gg, bb)) >= o.colored_threshold
 end
 
+--------------------------------------------------------------------
+-- v1.0.8「所有的内封字幕都要被检查」
+--   track-list 里 type='sub' 且 external=false 的轨全部纳入检查范围；
+--   当前目标轨若是内封轨，也返回其 id，用于按轨记录「已检查」状态。
+--------------------------------------------------------------------
+local function internal_subtitle_tracks()
+    local out = {}
+    local tl = mp.get_property_native('track-list') or {}
+    for _, t in ipairs(tl) do
+        if t.type == 'sub' and not t.external and t.id ~= nil then
+            out[#out + 1] = t
+        end
+    end
+    table.sort(out, function(a, b) return (a.id or 0) < (b.id or 0) end)
+    return out
+end
+
+current_internal_id = function()
+    local want = is_sec() and mp.get_property_number('secondary-sid', -1)
+        or mp.get_property_number('sid', -1)
+    if not want or want < 1 then return nil end
+    for _, t in ipairs(internal_subtitle_tracks()) do
+        if t.id == want then return want end
+    end
+    return nil
+end
+
+-- 「已经是标准白字黑边」是唯一保留原样的内封例外：
+--   非彩色 + 主色接近纯白（各通道 ≥235）。灰色 #8B8B8B、浅灰 #EAEAEA、
+--   任意带色调的内封字幕都不属于此例外。
+--   ⚠ 不查描边色：像素采样把「少量高饱和抗锯齿 fringe」也会记成 accent 并派生
+--     成 outline_color（如白字 + 0.33% 粉边），拿它判「非黑描边」会把标准白字
+--     误转成预设；彩色判据（info.colored）已经负责识别真彩描边，这里不重复判断。
+is_standard_black_white = function(info)
+    if not info or info.colored then return false end
+    local rr, gg, bb = tostring(info.color or ''):match('^#(%x%x)(%x%x)(%x%x)$')
+    if not rr then return false end
+    local r2, g2, b2 = tonumber(rr, 16), tonumber(gg, 16), tonumber(bb, 16)
+    return math.min(r2, g2, b2) >= 235
+end
+
 -- 综合检测：优先解析外挂文件（精确），否则像素采样（内封可用）
 local function inspect_style()
     local info = {source = nil}
@@ -1964,6 +2028,9 @@ run_inspect = function(gen, allow_retry)
     end
     inspect_done = true
     inspect_attempts = 0
+    -- v1.0.8：按轨记账。切换 sid 后若该内封轨尚未检查过，观察器会重新放行检测。
+    local internal_id = current_internal_id()
+    if internal_id then inspected_internal[internal_id] = true end
     local applied, skipped_dual = false, false
     if has_secondary_track() and preset.skip_dual then
         skipped_dual = true
@@ -1971,6 +2038,26 @@ run_inspect = function(gen, allow_retry)
         applied = apply_preset(true, true)
     end
     local report = preset_report(info, applied, skipped_dual)
+    if o.inspect_all_internal then
+        local tracks = internal_subtitle_tracks()
+        if #tracks > 0 then
+            local checked, pending = 0, {}
+            for _, t in ipairs(tracks) do
+                if inspected_internal[t.id] then checked = checked + 1
+                else pending[#pending + 1] = tostring(t.id) end
+            end
+            report = report .. string.format('\n内封字幕轨：共 %d 条，已检查 %d 条（当前 %s）',
+                #tracks, checked, internal_id and tostring(internal_id) or '外挂')
+            if #pending > 0 then
+                -- 真机实测示例 MKV 有 42 条内封字幕轨，全列会把左上角 OSD 撑出屏幕。
+                -- 最多列前 6 条，其余用「等 N 条」概括。
+                local shown = {}
+                for i = 1, math.min(#pending, 6) do shown[i] = pending[i] end
+                local more = #pending > 6 and (' 等 ' .. #pending .. ' 条') or ''
+                report = report .. '，待检查 ' .. table.concat(shown, '/') .. more
+            end
+        end
+    end
     last_report_text = report
     if report_clear_timer and report_clear_timer.kill then report_clear_timer:kill() end
     report_clear_timer = mp.add_timeout((o.report_ms or 6000) / 1000, function()
@@ -2596,6 +2683,7 @@ mp.register_event('file-loaded', function()
     -- 与有界重试兜底，直到检出或超过 inspect_retries 次。
     inspect_gen = inspect_gen + 1
     inspect_done = false
+    inspected_internal = {}     -- v1.0.8：新文件重置逐轨检查账本
     inspect_attempts = 0
     inspect_total = 0           -- 新文件的累计尝试额度（硬上限，见 INSPECT_TOTAL_CAP）
     sub_text_was_empty = true   -- 新文件首句对白视为「新一段」
@@ -2614,6 +2702,31 @@ mp.register_event('file-loaded', function()
         if runtime.bar_fit then refresh_barfit() end
     end)
 end)
+-- v1.0.8「所有的内封字幕都要被检查」：
+--   旧逻辑一个文件只检测一次（inspect_done=true 后不再重检），文件里其它内封轨
+--   （简体/繁体/英文/注释 signs 轨）用户切换过去时永远不会被检查、也不会套用样式。
+--   这里按轨放行：切到尚未检查过的内封轨时重置一次性守卫，重新跑检测。
+--   已检查过的轨直接跳过，避免来回切轨反复截图；inspect_armed 防止抢在首检之前；
+--   INSPECT_TOTAL_CAP 仍是本文件的总尝试硬上限。
+local function reinspect_internal_track()
+    if not o.inspect_all_internal or not inspect_armed then return end
+    local id = current_internal_id()
+    if not id or inspected_internal[id] then return end
+    if inspect_total >= INSPECT_TOTAL_CAP then return end
+    inspect_done = false
+    inspect_attempts = 0
+    sub_text_was_empty = true
+    -- 内封像素采样要求「还没被我们的 force 白字覆盖」：切到新轨前先撤掉上一条轨
+    -- 的自动预设（只清 auto=true，用户手动设的样式不动），否则 inspect_style
+    -- 会因 wants_force 直接放弃采样，新轨看起来「检查过了」其实什么都没采到。
+    clear_auto_style(state.main)
+    clear_auto_style(state.sec)
+    apply_all(false)
+    mp.add_timeout(0.1, function() run_inspect() end)
+end
+mp.observe_property('sid', 'number', function() reinspect_internal_track() end)
+mp.observe_property('secondary-sid', 'number', function() reinspect_internal_track() end)
+
 -- playback-restart 覆盖 seek/reload 等造成的重载
 mp.register_event('playback-restart', function() apply_all(false) end)
 

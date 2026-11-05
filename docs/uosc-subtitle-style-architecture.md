@@ -1,8 +1,8 @@
 # uosc_subtitle_style.lua 架构文档
 
-> 版本：2026-11-05（v1.0.7：主/次分轨 + 字体选择器 + 描边 + 位置避让 +
-> 灰色/`\pos` 字幕样式表覆盖 + 视频内嵌上下黑边贴合）
-> 适用范围：`scripts/uosc_subtitle_style.lua`（约 2600 行）及其配置、测试与工具链。
+> 版本：2026-11-05（v1.0.8：主/次分轨 + 字体选择器 + 描边 + 位置避让 +
+> 灰色/`\pos` 字幕样式表覆盖 + 视频内嵌上下黑边贴合 + **所有内封字幕轨全量检查**）
+> 适用范围：`scripts/uosc_subtitle_style.lua`（约 2700 行）及其配置、测试与工具链。
 > 结论均标注「源码依据」或「本机实测」，未经验证的推断不写入本文件。
 
 ---
@@ -380,7 +380,7 @@ E2E 有还原断言。
 
 ## 11. 测试体系
 
-### 11.1 单元测试（`tools/sub-style-test.lua`，246 项）
+### 11.1 单元测试（`tools/sub-style-test.lua`，259 项）
 
 自建 stub：`mp`（全局注入，非 `package.loaded`）、`mp.msg/utils/options`、
 可 `seek` 的虚拟文件系统、计时器队列（`flush_timers()` 验证延迟设置）、
@@ -392,7 +392,9 @@ E2E 有还原断言。
 像素采样（合成 bgr0 帧）/ 饱和度阈值边界（39 不彩色、40 彩色）/ 预设读写缓存 /
 开关与恢复出厂 / `flash_tl` 对齐还原 /
 **双语跳过与开关（T34-T35）/ 避让间距可配（T36）/ 报告时长可配（T37）** /
-v1.0.6 灰阶识别与共享样式表覆盖 / v1.0.7 黑边贴合（T48-T51）。
+v1.0.6 灰阶识别与共享样式表覆盖 / v1.0.7 黑边贴合（T48-T51）/
+v1.0.8 全内封轨检查（T52，13 条：报告统计、切轨重检、灰色识别关闭仍套用、
+标准白字 / 外挂 / 开关关闭保持旧行为）。
 
 T48-T51 用 32×200 合成帧（上下各 12 行纯黑、中央 128 灰）走 `screenshot-raw('video')`
 逐行亮度检测，覆盖：主轨 100 / 次轨 0 / 两轨限缩倍率 / `sub-margin-y` 居中且为整数 /
@@ -715,3 +717,81 @@ detect_bars(screenshot-raw('video'))
 
 E2E 阶段五还会校验 `sub-margin-y` 是整数 —— 这是真机踩过的坑：
 `mp.set_property_native('sub-margin-y', 2.4)` 会被 mpv 静默忽略。
+
+## 17. v1.0.8：所有的内封字幕都要被检查
+
+### 17.1 报障与真机事实
+
+用户截图（示例 `Dead-End...mkv`）：左上角报告
+`内封字幕(像素采样)：主色 #8B8B8B · 描边 #000000 · 饱和 #001A29` /
+`非彩色字幕，保持原样` —— 灰色内封字幕没有转成白字黑边。
+
+两个独立原因叠加：
+
+1. **截图里的文案是 v1.0.5 旧版**（新版为「非彩色字幕，保持原样（标准白字黑边）」）。
+   自更新器曾把本地 v1.0.7 降级成远端 v1.0.5，用户当时 mpv 内存里跑的是旧脚本；
+   该事故已由 `ae34ba8`（`@version` 版本守卫 + 禁止降级）修复，**需要重启 mpv 才加载新脚本**。
+2. 即便加载新版，检测范围仍不完整：`inspect_style()` 只看**当前选中的一条轨**
+   （`current_sub_path()` 取 `sid`/`secondary-sid`），成功后 `inspect_done=true`
+   使本文件不再重检；套用又依赖「彩色 / 灰阶」两个窄颜色判据。
+
+真机实测（`screenshot-raw` 探针，2026-11-05）：这支 4K MKV **有 42 条内封字幕轨**
+（`id=1..42`，当前 `sid=3`）。旧逻辑只检查 1 条，其余 41 条切换过去时永远不会被检查，
+也不会按规则套用样式。这是「所有的内封字幕都要被检查」的直接依据。
+
+### 17.2 实现
+
+| 新增 | 作用 |
+| --- | --- |
+| `internal_subtitle_tracks()` | 枚举 `track-list` 中 `type=sub` 且 `external=false` 的全部轨，按 id 排序 |
+| `current_internal_id()` | 当前目标轨若是内封，返回 id；外挂返回 nil |
+| `inspected_internal` | per-file 账本（key=轨 id），`file-loaded` 时清空 |
+| `is_standard_black_white(info)` | 唯一保留原样的内封例外：非彩色 + 主色各通道 ≥ 235 |
+| `sid` / `secondary-sid` 观察器 | 切到尚未检查过的内封轨 → 重置 `inspect_done`、刷新重试额度、重跑检测 |
+
+检测报告新增一行 `内封字幕轨：共 N 条，已检查 M 条（当前 X），待检查 …`；
+待检查列表**最多列 6 个 id**，其余用「等 N 条」概括 —— 42 条轨全列会把左上角 OSD 撑出屏幕。
+
+切轨重检前必须先 `clear_auto_style(state.main/sec)` + `apply_all(false)`：
+内封像素采样要求「还没被我们的 force 白字覆盖」，否则 `wants_force()` 为真会让
+`inspect_style()` 直接放弃采样，看起来「检查过了」其实什么都没采到。
+`clear_auto_style` 只清 `auto=true`，用户手动设过的样式不动。
+
+### 17.3 套用判据（不破坏历史规则）
+
+`needs_preset()` 顺序不变，只在末尾追加内封分支：
+
+```
+only_colored=false → 一律套用
+info.colored       → 套用（白字+彩描边 / 薄彩描边 / 饱和阈值边界）
+include_gray && is_gray_hex(color) → 套用（v1.0.6；区间放宽到亮度 [30,235]）
+preset_all_internal && 当前是内封轨 && !is_standard_black_white(info) → 套用（v1.0.8）
+其余 → 保持原样
+```
+
+- 外挂字幕不受 `preset_all_internal` 影响（样式来自文件解析，用户常有意保留配色）。
+- 「标准白字」例外**不查描边色**：像素采样会把少量高饱和抗锯齿 fringe 记成 accent
+  并派生 `outline_color`（白字 + 0.33% 粉边），拿它判「非黑描边」会误转；
+  真彩描边由 `info.colored` 负责，T46b 守卫继续有效。
+- `preset.skip_dual`（双语双轨保持原样）与「检查」是两件事：双轨仍会全部检查并报告，
+  只是不改颜色（用户此前确认的默认行为）。
+
+### 17.4 配置与真机结果
+
+`script-opts/uosc_subtitle_style.conf` 新增 `inspect_all_internal=yes` /
+`preset_all_internal=yes`，两项都关即回到 v1.0.7 行为（T52 有回归断言）。
+
+真机（示例视频，`--pause=yes --start=00:12:30`，`persist=no` 隔离状态文件）：
+
+```text
+INTERNAL_TRACKS=42 IDS=1..42
+SID=3  SUB_COLOR=#FFFFFFFF  ASS_OVERRIDE=force  SHARED_PRIMARY=true
+```
+
+即灰色内封字幕被检出并套用，`PrimaryColour=&H00FFFFFF` 已写入共享
+`sub-ass-style-overrides`（带 `\pos` 的顶部字幕 / signs 也会变色）。
+`uosc_danmaku` 的 `sites/iqiyi.lua:17` 报错是第三方 submodule 已知问题，与本次改动无关。
+
+> ⚠ 改本脚本功能必须同步递增文件头 `-- @version: X.Y.Z`：
+> `script-modules/updater.lua` 以它判定本地版本，本地 ≥ 远端时不更新、禁止降级。
+> 本次 v1.0.7 → **v1.0.8**。

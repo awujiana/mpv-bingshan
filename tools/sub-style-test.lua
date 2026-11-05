@@ -2006,6 +2006,130 @@ check('t51-menu-has-letterbox-toggle',
 check('t51-menu-has-letterbox-refresh',
     joined51:find('letterbox-refresh', 1, true) ~= nil)
 
+--------------------------------------------------------------------
+-- T52 v1.0.8「所有的内封字幕都要被检查」
+--   报障截图：内封 ASS 主色 #8B8B8B，旧版显示「非彩色字幕，保持原样」。
+--   ① 报告列出全部内封轨、逐轨记录检查状态；② 切换 sid 检查新轨；
+--   ③ 内封非标准配色一律套用（即使手动关掉灰色识别）；
+--   ④ 标准白字内封 / 外挂字幕 / 关闭开关时保持旧行为。
+--------------------------------------------------------------------
+local restore52 = {}
+local PX_GRAY_INTERNAL = {0x8B, 0x8B, 0x8B}   -- #8B8B8B（bgr0）
+local function gray_internal_shots()
+    local black_row = {BLACK, BLACK, BLACK, BLACK}
+    return {
+        subtitles = synth_frame({
+            {PX_GRAY_INTERNAL, BLACK, PX_GRAY_INTERNAL, BLACK},
+            black_row,
+            {BLACK, BLACK, PX_GRAY_INTERNAL, BLACK},
+            black_row,
+        }),
+        video = synth_frame({black_row, black_row, black_row, black_row}),
+    }
+end
+local function setup52(overrides)
+    local r = fresh_script_env()
+    env.opt_overrides = overrides or {}
+    set_tracks(false)
+    env.props['sid'] = 1
+    env.props['sub-text'] = '内封灰色字幕'
+    env.props['track-list'] = {
+        {type = 'sub', id = 1},
+        {type = 'sub', id = 2},
+        {type = 'sub', id = 3, external = true,
+         ['external-filename'] = 'C:/fake-config/other.ass'},
+    }
+    env.raw_shots = gray_internal_shots()
+    load_script()
+    return r
+end
+local function flush_all52()
+    for _ = 1, 4 do flush_timers() end
+end
+
+-- ① 首检：关掉灰色识别，内封全量规则仍然套用；报告列出所有内封轨
+local r52a = setup52()
+env.messages['toggle-gray']()
+env.events['file-loaded']()
+flush_all52()
+local report52 = last_showtext() or ''
+check('t52-report-lists-all-internal-tracks',
+    report52:find('内封字幕轨：共 2 条', 1, true) ~= nil, report52)
+check('t52-report-shows-checked-count',
+    report52:find('已检查 1 条', 1, true) ~= nil, report52)
+check('t52-report-shows-pending-tracks',
+    report52:find('待检查 2', 1, true) ~= nil, report52)
+check('t52-internal-applies-with-gray-off',
+    env.props['sub-color'] == '#FFFFFF', tostring(env.props['sub-color']))
+check('t52-internal-report-applied',
+    report52:find('已套用预设样式', 1, true) ~= nil, report52)
+-- ② 切到另一条内封轨 ⇒ 重新检测并记账
+local before52 = #env.showtexts
+fire_prop('sid', 2)
+flush_all52()
+check('t52-switch-sid-triggers-reinspect', #env.showtexts > before52,
+    tostring(#env.showtexts - before52))
+local report52b = last_showtext() or ''
+check('t52-second-internal-track-checked',
+    report52b:find('已检查 2 条', 1, true) ~= nil, report52b)
+check('t52-no-pending-after-all-checked',
+    report52b:find('待检查', 1, true) == nil, report52b)
+-- ③ 切回已检查过的轨不重复检测
+local before52c = #env.showtexts
+fire_prop('sid', 1)
+flush_all52()
+check('t52-revisited-track-no-reinspect', #env.showtexts == before52c,
+    tostring(#env.showtexts - before52c))
+restore52[#restore52 + 1] = r52a
+
+-- ④ 标准白字内封：保持原样（不误转，fringe 守卫的老规矩）
+local r52b = fresh_script_env()
+set_tracks(false)
+env.props['sid'] = 1
+env.props['sub-text'] = '内封白色字幕'
+env.props['track-list'] = {{type = 'sub', id = 1}}
+local PX_WHITE52 = {0xFF, 0xFF, 0xFF}
+local white_row = {BLACK, BLACK, BLACK, BLACK}
+env.raw_shots = {
+    subtitles = synth_frame({
+        {PX_WHITE52, BLACK, PX_WHITE52, BLACK},
+        white_row, {BLACK, BLACK, PX_WHITE52, BLACK}, white_row,
+    }),
+    video = synth_frame({white_row, white_row, white_row, white_row}),
+}
+load_script()
+env.events['file-loaded']()
+flush_all52()
+check('t52-standard-white-internal-unchanged', env.props['sub-color'] == nil,
+    tostring(env.props['sub-color']))
+restore52[#restore52 + 1] = r52b
+
+-- ⑤ 外挂灰色字幕不受内封全量规则影响（灰色识别关掉时保持原样）
+local r52c = fresh_script_env()
+set_tracks(false)
+env.vfs['C:/fake-config/gray52.ass'] = make_ass('&H008B8B8B', '&H00000000')
+set_external_track('C:/fake-config/gray52.ass')
+load_script()
+env.messages['toggle-gray']()
+env.messages['inspect']()
+check('t52-external-gray-not-forced', env.props['sub-color'] == nil,
+    tostring(env.props['sub-color']))
+restore52[#restore52 + 1] = r52c
+
+-- ⑥ 两个开关都关 ⇒ 回到旧行为：无统计行、关掉灰色识别后不套用
+local r52d = setup52({inspect_all_internal = false, preset_all_internal = false})
+env.messages['toggle-gray']()
+env.events['file-loaded']()
+flush_all52()
+local report52d = last_showtext() or ''
+check('t52-switches-off-no-track-report',
+    report52d:find('内封字幕轨', 1, true) == nil, report52d)
+check('t52-switches-off-keeps-original', env.props['sub-color'] == nil,
+    tostring(env.props['sub-color']))
+restore52[#restore52 + 1] = r52d
+
+for i = #restore52, 1, -1 do restore52[i]() end
+
 for _, r in ipairs(restore50) do r() end
 restore51(); restore49(); restore48()
 restore13(); restore14()
