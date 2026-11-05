@@ -1,0 +1,51 @@
+{
+  "owner": "awujiana",
+  "repo": "mpv-bingshan",
+  "project": "冰山 MPV 配置",
+  "license": "AGPL-3.0",
+  "badge_profile": "code",
+  "platform": "Lua",
+  "platform_logo": "lua",
+  "platform_logo_color": "white",
+  "status": "维护中",
+  "ai_assisted": true,
+  "ai_message": "是",
+  "badge_style": "flat",
+  "dynamic_badges": ["stars", "issues"],
+  "languages": [
+    {
+      "name": "简体中文",
+      "file": "README.md",
+      "current": true
+    },
+    {
+      "name": "繁體中文",
+      "file": "README.zh-TW.md",
+      "message": "切換"
+    },
+    {
+      "name": "English",
+      "file": "README.en.md",
+      "message": "Switch"
+    }
+  ],
+  "docs": [
+    {
+      "label": "文档索引",
+      "href": "#sec-11"
+    },
+    {
+      "label": "贡献指南",
+      "href": "CONTRIBUTING.md"
+    },
+    {
+      "label": "更新日志",
+      "href": "CHANGELOG.md"
+    },
+    {
+      "label": "多语言支持",
+      "href": "#sec-12"
+    }
+  ],
+  "readme": "README.md"
+}
