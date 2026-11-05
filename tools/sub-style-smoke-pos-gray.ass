@@ -1,0 +1,19 @@
+[Script Info]
+; sub-style v1.0.6 回归 fixture：灰色主色 + 带 \pos 的 explicit 事件
+; 注意：ffmpeg 的 ass 探测只认首 13 字节必须是 [Script Info]，
+; 前置注释会导致 "Failed to recognize file format"。
+Title: sub-style pos-gray fixture
+ScriptType: v4.00+
+PlayResX: 640
+PlayResY: 360
+ScaledBorderAndShadow: yes
+WrapStyle: 0
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Default,Noto Sans CJK SC,36,&H008B8B8B,&H000000FF,&H00000000,&H00000000,-1,0,0,0,100,100,0,0,1,2,0,2,20,20,20,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+Dialogue: 0,0:00:00.00,9:59:59.00,Default,,0,0,0,,{\pos(320,42)\an8}TOPSIGNGRAY
+Dialogue: 0,0:00:00.00,9:59:59.00,Default,,0,0,0,,BOTTOMDIALOGGRAY

@@ -70,7 +70,9 @@ local function finish()
 end
 
 --------------------------------------------------------------------
--- 流程：主/次分轨位置 → 分轨字体 → 分轨字号（含及时反馈计时）→ 状态 → 重置
+-- 流程：主/次分轨位置 → 分轨字体（先验证 v1.0.6 全样式覆盖写 FontName，
+--       再 toggle-all 关闭共享覆盖、恢复严格分轨供视觉判据使用）
+--       → 分轨字号（含及时反馈计时）→ 位置避让 → 描边 → 状态 → 重置
 --------------------------------------------------------------------
 
 -- 前向声明（Lua 局部量作用域从声明之后才开始）
@@ -118,18 +120,37 @@ step_sec_font = function()
             'secondary-sub-ass-override=' .. tostring(str('secondary-sub-ass-override')))
         record('main-override-baseline', str('sub-ass-override') == 'scale',
             'sub-ass-override=' .. tostring(str('sub-ass-override')))
-        -- 列表不写 FontName（分轨关键）：只可有 Bold 管理键
+        -- v1.0.6：style_override_all=yes 时字体**必须**写进共享样式表，
+        -- 否则带 \pos 的 explicit ASS 事件（顶部字幕 / signs）根本不会换字体
+        -- （force 的选择性覆盖只作用于 !explicit 事件）。
         local v = mp.get_property_native('sub-ass-style-overrides') or {}
-        local leaked
+        local font_entry
         for _, e in ipairs(v) do
-            if e:match('^FontName=') then leaked = true end
+            if e:match('^FontName=') then font_entry = e end
         end
-        record('font-not-leaked-to-shared-list', leaked == nil,
+        record('font-in-shared-list-for-pos-signs',
+            font_entry == 'FontName=Noto Serif CJK SC',
             'list=[' .. table.concat(v, ' | ') .. ']')
-        shoot('secfont')
-        after(0.5, function()
-            record('secfont-shot', shot_saved('secfont'))
-            step_sec_size()
+        -- 分轨字体的视觉判据要求「纯 force」模式：关掉全样式覆盖后，
+        -- 主轨回到 scale 基线、次轨仍由 force 改字体，主带像素才应保持不变。
+        -- 这也是 toggle-all 开关的真机回归（开启=覆盖 \pos 但主/次同变，关闭=严格分轨）。
+        send('toggle-all')
+        after(0.9, function()
+            local v2 = mp.get_property_native('sub-ass-style-overrides') or {}
+            local still = false
+            for _, e in ipairs(v2) do
+                if e:match('^FontName=')
+                    or e:match('^PrimaryColour=') or e:match('^OutlineColour=') then
+                    still = true
+                end
+            end
+            record('toggle-all-clears-shared-style', not still,
+                'list=[' .. table.concat(v2, ' | ') .. ']')
+            shoot('secfont')
+            after(0.5, function()
+                record('secfont-shot', shot_saved('secfont'))
+                step_sec_size()
+            end)
         end)
     end)
 end

@@ -34,6 +34,9 @@ uosc-updater-remote.json
 # uosc_subtitle_style 更新时的暂存/中转文件（正常路径不会残留，防止异常中断后误提交）
 *.lua.new
 *.lua.tmpbak
+# tools/ 下 Python 门禁脚本的字节码缓存
+__pycache__/
+*.pyc
 
 # === 例外：确需纳入版本管理的文件 ===
 # file-browser 收藏夹为用户配置，需保留

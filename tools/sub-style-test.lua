@@ -382,8 +382,8 @@ check('target-sec-rejected-without-track', env.showtexts[#env.showtexts]
     last_showtext())
 check('target-still-main', env.props['sub-pos'] ~= nil)
 
--- T6 字体：多词字体名 vararg 拼回；走 force + sub-font（不写列表——列表是
---    解码器级共享，写了会同时改所有字幕轨，无法分轨）
+-- T6 字体：多词字体名 vararg 拼回；除 force + sub-font 外，v1.0.6 还会把 FontName
+--    写进 sub-ass-style-overrides（改写 ASS 样式表），让带 \pos 的顶部字幕也换字体。
 set_tracks(false)
 env.props['sub-ass-style-overrides'] = nil
 env.props['sub-ass-override'] = 'scale'
@@ -392,14 +392,18 @@ env.messages['font']('Noto', 'Serif', 'CJK', 'SC')
 check('font-multiword-joined', env.props['sub-font'] == 'Noto Serif CJK SC',
     tostring(env.props['sub-font']))
 local list = env.props['sub-ass-style-overrides'] or {}
-check('font-not-in-shared-list', #list == 0, table.concat(list, ' | '))
+check('font-in-shared-list-for-pos-signs',
+    #list == 1 and list[1] == 'FontName=Noto Serif CJK SC',
+    table.concat(list, ' | '))
 -- 字体 ⇒ 需要 force ⇒ 延迟一个 tick 后 override 变 force
 check('font-defers-force', env.props['sub-ass-override'] == 'scale')
 flush_timers()
 check('font-forces-after-flush', env.props['sub-ass-override'] == 'force',
     tostring(env.props['sub-ass-override']))
 
--- T6b 分轨：主字幕设字体后，次字幕轨保持 scale 基线、列表无 FontName
+-- T6b 分轨：主字幕设字体后，次字幕轨保持 scale 基线；
+--    但列表（解码器级共享）里 FontName 会写入 —— 这是覆盖 \pos 字幕的代价，
+--    用户可用菜单「顶部/定位字幕一并改样式」关掉回到纯分轨模式。
 set_tracks(true)
 env.props['sub-ass-override'] = 'scale'
 env.props['secondary-sub-ass-override'] = 'strip'
@@ -412,15 +416,15 @@ check('font-main-force-only', env.props['sub-ass-override'] == 'force'
     'main=' .. tostring(env.props['sub-ass-override'])
     .. ' sec=' .. tostring(env.props['secondary-sub-ass-override']))
 list = env.props['sub-ass-style-overrides'] or {}
-local enc_kept, fontname_leaked
+local enc_kept, fontname_now
 for _, v in ipairs(list) do
     if v == 'Encoding=-1' then enc_kept = true end
-    if v:match('^FontName=') then fontname_leaked = true end
+    if v == 'FontName=Noto Sans CJK KR' then fontname_now = true end
 end
-check('font-list-keeps-foreign-only', enc_kept == true and fontname_leaked == nil,
+check('font-list-keeps-foreign-and-fontname', enc_kept == true and fontname_now == true,
     table.concat(list, ' | '))
 
--- T7 列表先读再写：用户条目保留；旧版写入的 FontName/Bold 残留被清理
+-- T7 列表先读再写：用户条目保留；旧版写入的 FontName/Bold 残留被清理并换成当前值
 env.props['sub-ass-style-overrides'] = {'Encoding=-1', 'FontName=OldFont', 'Bold=1', 'PlayResX=1920'}
 env.messages['bold']('on')
 list = env.props['sub-ass-style-overrides'] or {}
@@ -434,7 +438,45 @@ for _, v in ipairs(list) do
 end
 check('list-preserves-foreign', has_enc == true and has_playres == true)
 check('list-refreshes-bold', has_bold == true)
-check('list-drops-stale-fontname', has_font == nil and has_old_font == nil)
+check('list-drops-stale-fontname', has_font == true and has_old_font == nil,
+    table.concat(list, ' | '))
+
+-- T7b 全样式覆盖通道：颜色写 ASS &H00BBGGRR（BGR 倒序）、恢复原样会清键、开关可关
+env.messages['color']('#FF8040')
+list = env.props['sub-ass-style-overrides'] or {}
+local has_primary
+for _, v in ipairs(list) do
+    if v == 'PrimaryColour=&H004080FF' then has_primary = true end
+end
+check('color-writes-ass-primary-bgr', has_primary == true, table.concat(list, ' | '))
+env.messages['outline-color']('#00FF00')
+list = env.props['sub-ass-style-overrides'] or {}
+local has_outline_col
+for _, v in ipairs(list) do
+    if v == 'OutlineColour=&H0000FF00' then has_outline_col = true end
+end
+check('outline-color-writes-ass-bgr', has_outline_col == true, table.concat(list, ' | '))
+env.messages['color']('reset')
+env.messages['outline-color']('reset')
+list = env.props['sub-ass-style-overrides'] or {}
+local primary_left, outline_left = false, false
+for _, v in ipairs(list) do
+    if v:match('^PrimaryColour=') then primary_left = true end
+    if v:match('^OutlineColour=') then outline_left = true end
+end
+check('reset-clears-ass-color-keys', not primary_left and not outline_left,
+    table.concat(list, ' | '))
+-- 关掉全样式覆盖后，即使再设颜色也不写列表键（回到纯 force 分轨模式）
+env.messages['toggle-all']()
+env.messages['color']('#FF8040')
+list = env.props['sub-ass-style-overrides'] or {}
+local leaked_primary = false
+for _, v in ipairs(list) do
+    if v:match('^PrimaryColour=') or v:match('^FontName=') then leaked_primary = true end
+end
+check('override-all-off-keeps-list-clean', not leaked_primary, table.concat(list, ' | '))
+env.messages['toggle-all']()
+env.messages['color']('reset')
 
 -- T8 字号：写 sub-font-size 并把 override 的最终值延迟一个 tick（重建法）
 env.messages['font']('reset')
@@ -1020,6 +1062,34 @@ check('inspect-white-no-force', env.props['sub-ass-override'] == 'scale',
     tostring(env.props['sub-ass-override']))
 restore17()
 
+-- T27c 灰色字幕（2026-11-05 用户报障：Netflix 内封 ASS 主色 #8B8B8B）。
+-- 饱和度 0 ⇒ 旧「仅彩色」判据把它当标准黑白字幕跳过，顶部/对白字幕永远不转黑白。
+-- 新逻辑：灰阶（非纯白/纯黑）也算「非标准黑白」，自动套用白字黑边，
+-- 且必须把 PrimaryColour 写进 ASS 样式表，带 \pos 的字幕才真的会变色。
+local restore17c = fresh_script_env()
+set_tracks(false)
+env.vfs['C:/fake-config/gray.ass'] = make_ass('&H008B8B8B', '&H00000000')
+set_external_track('C:/fake-config/gray.ass')
+load_script()
+env.messages['inspect']()
+local rpt_g = last_showtext() or ''
+check('inspect-gray-report-primary', rpt_g:find('主色 #8B8B8B', 1, true) ~= nil, rpt_g)
+check('inspect-gray-applies-preset', env.props['sub-color'] == '#FFFFFF',
+    tostring(env.props['sub-color']))
+check('inspect-gray-report-applied', rpt_g:find('已套用预设样式', 1, true) ~= nil, rpt_g)
+local gl = env.props['sub-ass-style-overrides'] or {}
+local gray_primary = false
+for _, v in ipairs(gl) do
+    if v == 'PrimaryColour=&H00FFFFFF' then gray_primary = true end
+end
+check('inspect-gray-writes-style-primary', gray_primary, table.concat(gl, ' | '))
+-- 关掉灰色识别 ⇒ 同一份灰色字幕保持原样（开关真的有牙）
+env.messages['toggle-gray']()
+env.messages['inspect']()
+check('inspect-gray-off-keeps-original',
+    (last_showtext() or ''):find('保持原样', 1, true) ~= nil, last_showtext())
+restore17c()
+
 -- T27b 白字 + 紫描边（外挂 ASS）：主色白非彩，但描边 #481081 是彩色 ⇒ 判彩色并转黑白。
 -- 回归：彩色判定曾只看主色，白字+彩描边被漏判成「非彩色」而不转黑白。
 local restore17b = fresh_script_env()
@@ -1232,30 +1302,37 @@ env.messages['open-menu']()
 local data2 = jdec(uosc_command()[4])
 local want_menu = {
     'script-message-to uosc_subtitle_style color reset',
-    'script-message-to uosc_subtitle_style color #FFFFFF',
+    -- ⚠ #RRGGBB 必须带引号：mp.command 把裸 # 当注释符，参数会被吞掉（用户报障根因）
+    'script-message-to uosc_subtitle_style color "#FFFFFF"',
     'script-message-to uosc_subtitle_style outline reset',
     'script-message-to uosc_subtitle_style outline 2',
     'script-message-to uosc_subtitle_style outline-color reset',
-    'script-message-to uosc_subtitle_style outline-color #FF0000',
+    'script-message-to uosc_subtitle_style outline-color "#FF0000"',
     'script-message-to uosc_subtitle_style preset-apply',
     'script-message-to uosc_subtitle_style preset-save',
     'script-message-to uosc_subtitle_style preset-toggle-colored',
     'script-message-to uosc_subtitle_style preset-toggle-dual',
     'script-message-to uosc_subtitle_style preset-toggle-enabled',
+    'script-message-to uosc_subtitle_style toggle-gray',
+    'script-message-to uosc_subtitle_style toggle-all',
     'script-message-to uosc_subtitle_style inspect',
     'script-message-to uosc_subtitle_style preset-reset',
 }
-local found_menu, apply_item, has_section = {}
+local found_menu, apply_item, has_section = {}, nil, false
+local bare_hash = false
 for _, it in ipairs(data2.items or {}) do
     for i, wv in ipairs(want_menu) do
         if it.value == wv then found_menu[i] = true end
     end
     if it.value == 'script-message-to uosc_subtitle_style preset-apply' then apply_item = it end
     if it.title and it.title:find('预设样式', 1, true) then has_section = true end
+    if type(it.value) == 'string' and it.value:match('color #') then bare_hash = true end
 end
 local menu_all = true
 for i = 1, #want_menu do if not found_menu[i] then menu_all = false end end
 check('menu-preset-entries', menu_all == true)
+check('menu-no-bare-hash-color-value', not bare_hash)
+check('menu-keep-open-root', data2.keep_open == true)
 check('menu-preset-section', has_section == true)
 check('menu-preset-apply-hint-shows-preset',
     apply_item ~= nil and apply_item.hint:find('#FFFFFF', 1, true) ~= nil,
@@ -1764,6 +1841,173 @@ check('t47-after-seek-force', env.props['sub-ass-override'] == 'force',
     tostring(env.props['sub-ass-override']))
 restore47()
 
+--------------------------------------------------------------------
+-- T48~T51 上下黑边贴合（v1.0.7）
+-- 合成帧 32×200：上下各 12 行纯黑(6%)，中央 128 灰。
+--   video 帧给 detect_bars 逐行亮度扫描；subtitles 帧在中央补白点，让
+--   run_inspect 像素采样成功产出左上角报告 —— 这样能同时验证：
+--   refresh_barfit 的 OSD 微扰（show-text ' '）会清报告，脚本必须补回来。
+-- 注意 detect_bars 要求 img.h >= 16，故不能用 4×4 的 synth_frame。
+--------------------------------------------------------------------
+local BW48, BH48 = 32, 200
+local function barframe48(top, bottom, mid, sub_pixels)
+    local data = {}
+    for y = 0, BH48 - 1 do
+        local dark = (y < top) or (y >= BH48 - bottom)
+        for x = 0, BW48 - 1 do
+            local c = dark and 0 or mid
+            if sub_pixels and not dark and y >= 80 and y <= 120
+                and y % 2 == 0 and x % 2 == 0 then
+                c = 255
+            end
+            data[#data + 1] = string.char(c, c, c, 255)
+        end
+    end
+    return {w = BW48, h = BH48, stride = BW48 * 4, data = table.concat(data)}
+end
+local function bars_env(top, bottom, mid)
+    local r = fresh_script_env()
+    set_tracks(true)
+    env.props['sid'] = 1
+    env.props['sub-text'] = '上下黑边示例'
+    env.props['track-list'] = {{type = 'sub', id = 1}}   -- 内封：走像素采样
+    env.props['sub-margin-y'] = 34                        -- 基线：关闭/让位后必须还原
+    env.props['sub-font-size'] = 50                       -- 字幕盒高度估算输入
+    env.opt_overrides = {letterbox_sample_step = 1}
+    env.raw_shots = {
+        video = barframe48(top, bottom, mid, false),
+        subtitles = barframe48(top, bottom, mid, true),
+    }
+    return r
+end
+
+-- T48 检测 → 布局：主轨贴下黑边(100)、次轨贴上黑边(0)、两轨同倍率限缩
+local restore48 = bars_env(12, 12, 128)
+load_script()
+check('t48-letterbox-messages-registered',
+    env.messages['letterbox-toggle'] ~= nil and env.messages['letterbox-refresh'] ~= nil)
+env.events['file-loaded']()
+flush_timers()   -- 首检 + 黑边检测两个 timer 同轮执行（先报告、后贴合）
+local scale48 = tonumber(env.props['sub-scale']) or 0
+local margin48 = tonumber(env.props['sub-margin-y']) or -1
+check('t48-main-pos-bottom-bar', env.props['sub-pos'] == 100,
+    tostring(env.props['sub-pos']))
+check('t48-sec-pos-top-bar', env.props['secondary-sub-pos'] == 0,
+    tostring(env.props['secondary-sub-pos']))
+-- usable = 200×0.06×0.9 = 10.8；unit = 50×1.2×(200/720) = 16.667 ⇒ scale = 0.648
+check('t48-scale-limited-by-bar-height', math.abs(scale48 - 0.648) < 0.02,
+    string.format('scale=%.4f', scale48))
+check('t48-sec-scale-same-as-main', env.props['secondary-sub-scale'] == scale48,
+    tostring(env.props['secondary-sub-scale']))
+-- margin_y = (12 - 10.8)/2 / (200/720) = 2.16，但 sub-margin-y 是 INT 属性，
+-- 真机实测写入小数会被 mpv 静默忽略 ⇒ 必须四舍五入成 2。
+check('t48-margin-y-centers-box-in-bar', math.abs(margin48 - 2) < 0.001,
+    string.format('margin_y=%.4f', margin48))
+check('t48-margin-y-is-integer', margin48 == math.floor(margin48),
+    tostring(margin48))
+local has_nudge48 = false
+for _, t in ipairs(env.showtexts) do if t == ' ' then has_nudge48 = true end end
+check('t48-nudge-reconfigure-for-margin', has_nudge48)
+local last48 = env.showtexts[#env.showtexts] or ''
+check('t48-report-restored-after-osd-nudge',
+    last48:find('内封字幕', 1, true) ~= nil and last48:find('主色', 1, true) ~= nil,
+    last48:gsub('\n', ' / '))
+
+-- T49 开关 / 手动让位 / 复位 / 切文件：都必须还原共享的 sub-margin-y
+local restore49 = bars_env(12, 12, 128)
+load_script()
+env.events['file-loaded']()
+flush_timers()
+local function refit49()
+    env.messages['letterbox-toggle']()   -- 先关
+    env.messages['letterbox-toggle']()   -- 再开：refresh_barfit 同步重检
+end
+env.showtexts = {}
+env.messages['letterbox-toggle']()
+local off_nudge49 = false
+for _, t in ipairs(env.showtexts) do if t == ' ' then off_nudge49 = true end end
+check('t49-toggle-off-triggers-reconfigure', off_nudge49)
+check('t49-toggle-off-restores-margin', env.props['sub-margin-y'] == 34,
+    tostring(env.props['sub-margin-y']))
+check('t49-toggle-off-restores-scale', env.props['sub-scale'] == 1,
+    tostring(env.props['sub-scale']))
+check('t49-toggle-off-flash', (last_showtext() or ''):find('已还原默认位置', 1, true) ~= nil,
+    last_showtext())
+-- 上面已关过一次，这里单次调用即「重新开启 + 立即重检」
+env.messages['letterbox-toggle']()
+check('t49-toggle-on-refits', env.props['sub-margin-y'] ~= 34
+    and (tonumber(env.props['sub-scale']) or 1) < 1,
+    string.format('margin=%s scale=%s', tostring(env.props['sub-margin-y']),
+        tostring(env.props['sub-scale'])))
+env.messages['pos']('50')
+check('t49-manual-pos-yields-barfit', env.props['sub-pos'] == 50
+    and env.props['sub-margin-y'] == 34,
+    string.format('pos=%s margin=%s', tostring(env.props['sub-pos']),
+        tostring(env.props['sub-margin-y'])))
+refit49()
+env.messages['scale']('0.8')
+check('t49-manual-scale-yields-barfit', env.props['sub-scale'] == 0.8
+    and env.props['sub-margin-y'] == 34,
+    string.format('scale=%s margin=%s', tostring(env.props['sub-scale']),
+        tostring(env.props['sub-margin-y'])))
+refit49()
+env.messages['reset']()
+check('t49-reset-restores-margin', env.props['sub-margin-y'] == 34,
+    tostring(env.props['sub-margin-y']))
+refit49()
+env.events['end-file']()
+check('t49-end-file-restores-margin', env.props['sub-margin-y'] == 34,
+    tostring(env.props['sub-margin-y']))
+-- 外部改属性（r/t 键 / 其它脚本）也要让位
+refit49()
+fire_prop('sub-pos', 70)
+check('t49-external-pos-yields-barfit', env.props['sub-margin-y'] == 34,
+    tostring(env.props['sub-margin-y']))
+
+-- T50 误判守卫：暗场 / 无黑边 / 黑边过薄 / 单侧黑边都不应贴合
+local restore50 = {}
+local function guard_case(name, top, bottom, mid)
+    restore50[#restore50 + 1] = bars_env(top, bottom, mid)
+    load_script()
+    env.events['file-loaded']()
+    flush_timers()
+    check(name, env.props['sub-margin-y'] == 34 and env.props['sub-scale'] == 1,
+        string.format('margin=%s scale=%s', tostring(env.props['sub-margin-y']),
+            tostring(env.props['sub-scale'])))
+end
+guard_case('t50-dark-frame-not-misdetected', 12, 12, 0)
+guard_case('t50-no-bars', 0, 0, 128)
+guard_case('t50-thin-bars-below-min', 2, 2, 128)
+guard_case('t50-one-sided-bar-not-fitted', 12, 0, 128)
+-- 有黑边但 conf 里关掉 letterbox_fit：不检测、不改写任何布局属性
+local restore50b = bars_env(12, 12, 128)
+env.opt_overrides = {letterbox_sample_step = 1, letterbox_fit = false}
+load_script()
+env.events['file-loaded']()
+flush_timers()
+check('t50-letterbox-fit-no-option', env.props['sub-margin-y'] == 34
+    and env.props['sub-scale'] == 1,
+    string.format('margin=%s scale=%s', tostring(env.props['sub-margin-y']),
+        tostring(env.props['sub-scale'])))
+restore50[#restore50 + 1] = restore50b
+
+-- T51 菜单里要有开关与「重新检测」入口
+local restore51 = fresh_script_env()
+set_tracks(true)
+load_script()
+env.messages['uosc-version']()
+env.messages['open-menu']()
+local data51 = jdec(uosc_command()[4])
+local values51 = {}
+for _, it in ipairs(data51.items or {}) do values51[#values51 + 1] = tostring(it.value) end
+local joined51 = table.concat(values51, '\n')
+check('t51-menu-has-letterbox-toggle',
+    joined51:find('letterbox-toggle', 1, true) ~= nil)
+check('t51-menu-has-letterbox-refresh',
+    joined51:find('letterbox-refresh', 1, true) ~= nil)
+
+for _, r in ipairs(restore50) do r() end
+restore51(); restore49(); restore48()
 restore13(); restore14()
 
 restore(); restore2(); restore3(); restore4(); restore5(); restore6(); restore7()

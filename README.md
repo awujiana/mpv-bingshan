@@ -106,13 +106,18 @@ PS：自行编辑配置文件时，注意编码格式应为 UTF-8，换行符为
   且有 17 个本地脚本根本不在 wiki 中。
 - **本 README 的核对内容即为差异清单**，后续新增/升级脚本时请同步更新本节。
 
-### 内封字幕样式切换（scripts/uosc_subtitle_style.lua，主/次字幕分轨）
+### 内封字幕样式切换（scripts/uosc_subtitle_style.lua，主/次字幕分轨，v1.0.7）
 
 把字幕在 **原位 / 中下 / 中部 / 中上 / 顶部** 之间切换，可整体缩放、改字体、字号、粗体、
 **描边粗细与描边颜色**；**主字幕（sid）与次字幕（secondary-sid）分轨独立调整**，
 且两轨位置自动避让、**永不重叠**。载入时自动**检测字幕样式**（主色/描边色/字体/内封字体），
-在**左上角输出报告**，并可**只在彩色字幕时自动套用可修改、可缓存的预设样式**；
+在**左上角输出报告**，并可对**彩色字幕与灰色字幕**自动套用可修改、可缓存的预设样式；
 **双语字幕（双轨）默认不改颜色**。界面直接用 uosc 的菜单。
+
+- **v1.0.6**：字体 / 主色 / 描边色会同步改写 ASS 样式表，因此**带 `\pos` 的顶部对话字幕、
+  signs 也能换字体、转黑白**；主颜色候选补入**黑色**与灰阶；菜单点击后保持打开并刷新选中态。
+- **v1.0.7**：检测到**视频内嵌上下黑条**时，默认把主字幕放进下黑边、次字幕放进上黑边，
+  **不遮挡画面内容**；菜单「其它 → 上下黑边内显示字幕」可关闭。
 
 > 架构细节（数据模型、mpv 能力矩阵、应用引擎、字体枚举、测试体系）见
 > [`docs/uosc-subtitle-style-architecture.md`](docs/uosc-subtitle-style-architecture.md)。
@@ -126,7 +131,11 @@ PS：自行编辑配置文件时，注意编码格式应为 UTF-8，换行符为
   outline <粗细|reset> | outline-color <#RRGGBB|reset> | color <#RRGGBB|reset> |
   style-preset <big-bold|original|sync-other> | open-fonts | rescan-fonts | reset | fix-override |
   preset-apply | preset-save | preset-reset | preset-toggle-colored | preset-toggle-dual |
-  preset-toggle-enabled | inspect`
+  preset-toggle-enabled | inspect | toggle-gray | toggle-all |
+  letterbox-toggle | letterbox-refresh`
+
+> ⚠ uosc 菜单项的 `value` 由 `mp.command()` 解析，裸 `#RRGGBB` 会被当成注释起始符吞掉参数
+> （表现为点黑色后提示「恢复字幕原样」）。脚本生成的颜色命令一律写成 `"#RRGGBB"`。
 
 **编辑目标制**：菜单顶部切换「主字幕 / 次字幕」，位置/缩放/字体/字号只对**当前目标轨**生效；
 另一轨恢复字幕原样（其预设仍被记忆，切回即恢复）。两轨样式值相同时一起生效。
@@ -137,8 +146,17 @@ PS：自行编辑配置文件时，注意编码格式应为 UTF-8，换行符为
 | 项目 | 主/次独立 | 实现通道 |
 | --- | --- | --- |
 | 位置 / 缩放 | ✅ 完全独立 | `sub-pos/scale` 与 `secondary-sub-pos/scale`；两轨自动避让不重叠 |
-| 字体 / 字号 / 描边 | ✅ 仅目标轨 | `sub-ass-override=force` + `sub-font`/`sub-font-size`/`sub-outline-size`/`sub-outline-color`（force 的选择性覆盖位只作用于该轨） |
+| 字体 / 字号 / 描边（对白幕） | ✅ 仅目标轨 | `sub-ass-override=force` + `sub-font`/`sub-font-size`/`sub-outline-size`/`sub-outline-color`（force 的选择性覆盖位只作用于该轨） |
+| 字体 / 主色 / 描边色（`\pos` 字幕） | ⚠ 共享 | `sub-ass-style-overrides` 的 `FontName` / `PrimaryColour` / `OutlineColour`，改写 ASS 样式表本身；`force` 对带 `\pos` 的 explicit 事件**完全无效** |
 | 粗体 | ⚠ 共享 | `sub-ass-style-overrides` 列表 `Bold=`（列表是解码器级共享，mpv 无分轨粗体通道） |
+| 上下黑边内的边距 | ⚠ 共享 | `sub-margin-y` 为 INT 且全局共享，贴合时写入、关闭/切文件时还原基准值 |
+
+- **`\pos` 覆盖通道**：Netflix 等内封 ASS 每行都带 `\pos`，实测只改 `force` / `sub-font` 时
+  字体与主色完全无反应。开启 `style_override_all=yes`（默认）后，脚本把 `FontName` /
+  `PrimaryColour` / `OutlineColour` 写进 `sub-ass-style-overrides`（ASS 颜色格式
+  `&H00BBGGRR`，BGR 倒序），顶部字幕与 signs 才会一起变。代价：该列表解码器级共享、
+  主/次轨同变，改动会触发一次重建；菜单「全部字幕统一样式」(`toggle-all`) 可临时关掉，
+  回到纯分轨模式。
 
 - **位置默认与不重叠**：沿用 mpv 原生默认（主 100 底部 / 次 0 顶部，天然不重叠），
   脚本启动时读当前值而非硬编码；只有你通过菜单设过位置才回写（归属权模型）。
@@ -147,7 +165,8 @@ PS：自行编辑配置文件时，注意编码格式应为 UTF-8，换行符为
 
 - 位置实测表（640x360）：`pos=5`→贴顶 y9-33 / `25`→中上 y52-77 / `50`→中部 y136-161 /
   `75`→中下 y220-244 / `100`→原位 y304-328。带 `\pos` 的 signs/特效幕不随 sub-pos 移动。
-- 字体/字号走 force 的副带效果：该轨**对白幕**同时按 `--sub-*` 配色渲染（signs 因 explicit 豁免）。
+- 字体/字号走 force 的副带效果：该轨**对白幕**同时按 `--sub-*` 配色渲染（force 下 signs 因
+  explicit 豁免；开启 `style_override_all` 后 signs 由样式表覆盖一并生效）。
 - 字号单位是「720p 等效像素」（与 `--sub-font-size` 同语义），mpv 会按字幕脚本的 PlayResY 换算。
 - 图形字幕（PGS/VOBSUB）不走 libass，位置/缩放/样式均不可调，菜单与 OSD 会提示。
 
@@ -173,37 +192,76 @@ PS：自行编辑配置文件时，注意编码格式应为 UTF-8，换行符为
 - **检测**：外挂字幕直接解析 ASS 文件（[V4+ Styles] 的 Default 样式 + [Fonts] 段内封字体）；
   内封字幕用 `screenshot-raw` 双帧差分做像素采样（取最多亮色为主色、最多暗色为描边色）。
   结果以**三行报告显示在左上角**：`来源：主色 #RRGGBB · 描边 #RRGGBB` / `字体 · 字号 · 内封字体 N 个` /
-  `已套用预设样式（…）` 或 `非彩色字幕，保持原样`。报告用 `show-text` 临时置于左上角，6s 后自动消失。
+  `已套用预设样式（…）` 或 `非彩色字幕，保持原样（标准白字黑边）`。报告用 `show-text` 临时置于左上角，
+  6s 后自动消失（黑边检测的重绘微扰会清掉报告，脚本会缓存文案再补回）。
 - **预设样式**：`color`（主色）/`outline-color`（描边色）/`outline`（粗细）/字体/字号/粗体
   可存为预设（「把当前样式存为预设」或 `preset-save` 消息），缓存于 `~~/uosc-subtitle-style-preset.json`，
   重启后仍生效；「恢复出厂预设」回到 `script-opts/uosc_subtitle_style.conf` 的 `preset_*` 默认值。
-- **仅彩色才套用**：判定为「彩色」的阈值是主色饱和度 `max-min(RGB) ≥ colored_threshold`（默认 40）。
-  白/灰/黑字幕**保持原样不套用**；不想自动套用可关「载入时自动套用」开关（只报告不修改）。
+- **彩色 / 灰色才套用**：彩色阈值是主色饱和度 `max-min(RGB) ≥ colored_threshold`（默认 40）；
+  v1.0.6 起额外识别**灰阶**（如 Netflix 内封 ASS 的 `#8B8B8B`）——饱和度为 0，但既不是纯白
+  也不是纯黑，同样自动套用白字黑边预设（开关「灰色字幕也自动转黑白」/ `preset_include_gray`）。
+  只有**标准白字黑边**保持原样；不想自动套用可关「载入时自动套用」开关（只报告不修改）。
+- **黑色主色**：`colors` 候选含 `黑=#000000` 与 `深灰 / 灰 / 浅灰`，用于浅色画面或还原被
+  自动识别成「非标准黑白」的灰色字幕。
 - **双语字幕（双轨）默认不改颜色**：检测到次字幕轨（`secondary-sid`）时直接跳过套用——
   两条轨往往已各有配色，强行统一反而破坏双语可读性（报告第三行会说明
   `双语字幕（双轨），保持原样不改颜色`）。菜单「双语字幕保持原样」开关或 conf 的
   `preset_skip_dual=no` 可改回「双语也套用」；手动 `preset-apply`/「套用预设样式」始终可用。
 - **配置文件**：`script-opts/uosc_subtitle_style.conf` 带中文注释，覆盖上述全部行为
   （阈值 `colored_threshold`、检测时机 `inspect_delay`、报告时长 `report_ms`、
-  避让间距 `pos_min_gap`、force 重建延迟 `rebuild_delay`、预设各项 `preset_*` 等）。
-- 已知边界：像素采样要求字幕正在显示且未处于我方 force 配色；带 `\pos` 的 signs 不参与采样。
+  避让间距 `pos_min_gap`、force 重建延迟 `rebuild_delay`、预设各项 `preset_*`；
+  v1.0.6 的 `style_override_all` / `preset_include_gray`；v1.0.7 的 `letterbox_*` 六项）。
+- 已知边界：像素采样要求字幕正在显示且未处于我方 force 配色；带 `\pos` 的 signs 不参与采样；
+  样式表覆盖是共享通道，需要严格分轨时用 `toggle-all` 关闭。
+
+**上下黑边内显示字幕（v1.0.7，默认开启）**
+
+- **适用场景**：视频**文件内嵌**的上下黑条（示例 `3840×2160` 上下各 `120px`，约 5.6%）。
+  黑条是编码进画面的，`osd-dimensions.mt/mb = 0`；mpv 原生 `sub-use-margins` /
+  `sub-ass-force-margins` 只管播放窗口/全屏 letterbox，对它无能为力。
+- **检测**：`file-loaded` 后 `inspect_delay + letterbox_delay`，用 `screenshot-raw('video')`
+  逐行采样平均亮度（列步长 `letterbox_sample_step`），从上/下各扫 45% 找连续暗行；
+  中央区域亮度守卫防止暗场/淡入淡出误判，黑条占比需 ≥ `letterbox_min_bar`。
+- **布局**：按 `sub-font-size × 1.2 × frame_h/720` 估算字幕盒，限缩 `sub-scale` 让它塞进黑条
+  （留 `letterbox_pad` 余量），再用共享 `sub-margin-y` 居中；主轨 `sub-pos=100`（下黑边）、
+  次轨 `secondary-sub-pos=0`（上黑边），两轨同倍率。优先级高于中日双语自动布局。
+- **让位与还原**：菜单改位置/缩放、外部（mpv `R`/`T` 键）改位置、`reset`、`end-file` 都会
+  立即退出本次贴合并还原 `sub-margin-y` 基准值。`sub-margin-y` 是 **INT 属性**（真机实测传
+  小数会被 mpv 静默忽略）且不在 `reset-on-next-file` 列表里，必须显式还原，否则跨文件泄漏；
+  改完还要发一次 `show-text ' ' 60` 触发 `configure_ass`，否则「属性值变了、画面不动」。
+- **菜单**：「其它 → 上下黑边内显示字幕」(`letterbox-toggle`)、「重新检测上下黑边」
+  (`letterbox-refresh`)；conf 里 `letterbox_fit=no` 可默认关闭。
+- **硬边界**：带 `\pos` 的 explicit ASS 事件对 `sub-pos` / `sub-scale` / `sub-margin-y` 全部豁免，
+  **保持原位**；强行 `strip` 会丢定位标签，脚本不重写事件。窗口 letterbox 仍由 mpv 原生处理。
+  真机 E2E 用双轨 SRT 夹具验证：贴合前画面区字幕差分 `mid=653`，贴合后 `mid=0`，
+  上/下黑边分别 `230` / `319`，即画面主体完全不被遮挡。
 
 **测试**
-- `../luajit.exe tools/sub-style-test.lua` —— 149 项单测（含字体解析器合成 sfnt/TTC 字节流、
-  位置避让、稳态编辑不重建、ASS 解析/像素采样/饱和度阈值、预设读写与开关、
-  双语跳过与开关、避让间距/报告时长可配、菜单项）
+- `../luajit.exe tools/sub-style-test.lua` —— 246 项单测（含字体解析器合成 sfnt/TTC 字节流、
+  位置避让、稳态编辑不重建、ASS 解析/像素采样/饱和度阈值、灰阶识别与 `\pos` 样式表覆盖、
+  预设读写与开关、双语跳过与开关、避让间距/报告时长可配、菜单项、
+  T48–T51 上下黑边检测/布局/让位/菜单）
 - `python tools/sub-style-conf-verify.py` —— conf 静态门禁：按 mpv 解析语义复算
   `script-opts/uosc_subtitle_style.conf`（键集合与脚本 o 表对齐、布尔/数值/颜色格式、
   **行尾注释检测**——mpv 不支持 `key=value  # 注释`，会被整段吃进值里）
-- `/c/Python314/python.exe tools/sub-style-e2e.py` —— 真机 E2E 三阶段：
-  ① 双字幕轨探针 25 断言 + 视觉波段判据（分轨位置/字体/字号互不影响）；
+- `/c/Python314/python.exe tools/sub-style-e2e.py` —— 真机 E2E 五组判据：
+  ① 双字幕轨探针 + 视觉波段判据（分轨位置/字体/字号互不影响，含 `FontName` 写入共享
+     样式表与 `toggle-all` 清除覆盖）；
   ② 字幕流连续性回归（多句 fixture，编辑后逐句校验仍正常跳句）；
   ③ 预设样式五用例：A 彩色→套用 / B 白色→保持原样 / C 修改并保存缓存 /
-    D 重启读缓存 / E 双语双轨→不套用（与 A 同 fixture 差分），
-    含左上角报告出现与字幕变色的像素判据
+     D 重启读缓存 / E 双语双轨→不套用（与 A 同 fixture 差分），
+     含左上角报告出现与字幕变色的像素判据；
+  ④ v1.0.6 报障回归：灰色 `#8B8B8B` 转白、带 `\pos` 的顶部字幕变色、
+     菜单点黑色 `"#000000"` 不被注释吞掉、字体写入样式表；
+  ⑤ v1.0.7 上下黑边贴合：双轨 SRT + 合成 `640×360` 上下各 `24px` 黑条，探针 15 断言 +
+     Python 侧独立复核 `BASE mid=653 → FIT mid=0`，上下黑边各出现一条字幕
 - 探针 `tools/sub-style-probe.lua` / `sub-style-probe-stream.lua` /
-  `sub-style-probe-preset.lua` / `sub-style-probe-preset-save.lua`；
-  fixture `tools/sub-style-smoke{,-sec,-multi,-colored}.ass`
+  `sub-style-probe-preset.lua` / `sub-style-probe-preset-save.lua` /
+  `sub-style-probe-pos.lua` / `sub-style-probe-bars.lua`；
+  fixture `tools/sub-style-smoke{,-sec,-multi,-colored}.ass` /
+  `sub-style-smoke-pos-gray.ass` / `sub-style-smoke-bars-{main,sec}.srt`
+- E2E 会按日志标签隔离 `uosc_danmaku` / `uosc_staff_credits` / `dynamic_crop` 等第三方插件的
+  无关 Lua error；被测脚本与探针自身的报错仍判 FAIL。
 - ⚠ E2E 视觉判据依赖 Pillow：PATH 里的 managed python 未装，请用系统 Python
   （`C:\Python314\python.exe`，已装 Pillow）运行；缺 PIL 时脚本会明确退出而非崩溃。
 

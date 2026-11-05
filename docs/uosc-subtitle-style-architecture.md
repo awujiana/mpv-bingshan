@@ -1,7 +1,8 @@
 # uosc_subtitle_style.lua 架构文档
 
-> 版本：2026-10-21（主/次分轨 + 本机字体选择器 + 描边 + 位置避让）
-> 适用范围：`scripts/uosc_subtitle_style.lua`（约 1400 行）及其配置、测试与工具链。
+> 版本：2026-11-05（v1.0.7：主/次分轨 + 字体选择器 + 描边 + 位置避让 +
+> 灰色/`\pos` 字幕样式表覆盖 + 视频内嵌上下黑边贴合）
+> 适用范围：`scripts/uosc_subtitle_style.lua`（约 2600 行）及其配置、测试与工具链。
 > 结论均标注「源码依据」或「本机实测」，未经验证的推断不写入本文件。
 
 ---
@@ -130,6 +131,20 @@ preset = {
 **结论**：位置/缩放天然分轨；字体/字号/描边靠 force 的「按轨生效」特性实现分轨；
 粗体在 mpv 层面无法分轨，只能共享（菜单 hint 已明示）。
 
+**v1.0.6 补充通道（本机实测）**：`sub-ass-override=force` 的选择性覆盖只作用于
+`!explicit` 事件；带 `\pos` 的顶部 signs / 定位对白是 `explicit`，字体、主色、描边色
+**完全不受 force 影响**。唯一能改它们的通道是 `sub-ass-style-overrides` 列表
+（改写 ASS 样式表本身）：`FontName=` / `PrimaryColour=` / `OutlineColour=`。
+该列表是**解码器级共享**，主/次轨会一起变，代价由菜单「顶部/定位字幕一并改样式」
+（`toggle-all`）显式暴露，用户可关掉回到纯分轨模式。颜色格式是 ASS 的
+`&H00BBGGRR`（BGR 倒序），`#FF8040` → `&H004080FF`。
+
+**v1.0.7 补充属性**：`sub-margin-y` 是**共享的 INT 属性**，且不在
+`reset-on-next-file` 列表里 —— 写入非整数（如 2.4）会被 mpv **静默忽略**，
+必须四舍五入；改过之后必须在关闭/让位/切文件时显式还原，否则跨文件泄漏。
+`sub-use-margins` / `sub-ass-force-margins` 只处理窗口 letterbox（`osd-dimensions.mt/mb`），
+对**编码进画面的黑条**（mt/mb=0）无能为力。
+
 ---
 
 ## 5. 应用引擎
@@ -184,12 +199,23 @@ sub-font-size   ← target.size or baseline.size
 sub-outline-size ← target.outline or baseline.outline
 sub-outline-color ← target.outline_color or baseline.outline_color
 sub-bold        ← target.bold 解析结果 or baseline.bold
-sub-ass-style-overrides 列表 ← 仅 Bold=（读-改-写，保留用户其它条目）
+sub-ass-style-overrides 列表 ← 读-改-写，保留用户其它条目
 ```
 
 **列表写回必须「先读再写」**：`m_config_set_option_node` 对列表是**严格替换**
 （`options/m_config_frontend.c`），直接写会冲掉用户 `-append` 的条目（如 `Encoding=-1`）。
-因此每次先剔除本脚本管理的键（`FontName/Fontsize/Bold`）再合并。
+因此每次先剔除本脚本管理的键再合并。
+
+`MANAGED_OVERRIDE_KEYS` 在 v1.0.6 扩为
+`FontName / Fontsize / Bold / PrimaryColour / OutlineColour / Outline`：
+
+| 开关 | 列表里写什么 | 效果 |
+| --- | --- | --- |
+| `style_override_all=no` | 仅 `Bold=`（沿用旧行为，纯分轨） | 普通对白靠 force 换字体/配色；`\pos` signs 保持原样 |
+| `style_override_all=yes`（默认） | 追加 `FontName=` / `PrimaryColour=` / `OutlineColour=` | 连 `\pos` signs 一起换字体/配色；两轨同变（共享列表代价） |
+
+`hex_to_ass_color()` 把 `#RRGGBB` 转成 `&H00BBGGRR`。列表变化本身会触发一次
+解码器重建 —— 这是覆盖 `\pos` 字幕必须付出的代价，用 `toggle-all` 可退回零重建路径。
 
 ---
 
@@ -306,8 +332,15 @@ parse_font_at()  → sfnt 头(12B) → 表目录(16B×n) → name 表 → 族名
 | `preset-toggle-dual` | — | 开关「双语字幕（双轨）保持原样」 |
 | `preset-toggle-enabled` | — | 开关「载入时自动套用」 |
 | `inspect` | — | 重新检测字幕样式并输出左上角报告 |
+| `toggle-gray` | — | v1.0.6：开关「灰色字幕也自动转黑白」 |
+| `toggle-all` | — | v1.0.6：开关「顶部/定位（`\pos`）字幕一并改样式」 |
+| `letterbox-toggle` | — | v1.0.7：开关「上下黑边内显示字幕」 |
+| `letterbox-refresh` | — | v1.0.7：立即重新检测上下黑边 |
 
----
+> ⚠ **uosc 菜单 `value` 是命令字符串**，由 uosc 用 `mp.command()` 执行；mpv 命令
+> 解析器把裸 `#` 当注释起始符，所以 `color #FFFFFF` 的参数会被整段吞掉，脚本收到
+> 空参数并退化成「恢复字幕原样」。所有含 `#RRGGBB` 的 value 必须用 `menu_cmd()`
+> 给参数加**双引号**（`color "#FFFFFF"`），含空格的字体名同理。
 
 ## 10. 预设样式与样式检测（载入时自动）
 
@@ -347,7 +380,7 @@ E2E 有还原断言。
 
 ## 11. 测试体系
 
-### 11.1 单元测试（`tools/sub-style-test.lua`，209 项）
+### 11.1 单元测试（`tools/sub-style-test.lua`，246 项）
 
 自建 stub：`mp`（全局注入，非 `package.loaded`）、`mp.msg/utils/options`、
 可 `seek` 的虚拟文件系统、计时器队列（`flush_timers()` 验证延迟设置）、
@@ -358,13 +391,20 @@ E2E 有还原断言。
 描边 / 位置避让 / **稳态编辑不重建** / ASS 解析与 `&HAABBGGRR→#RRGGBB` /
 像素采样（合成 bgr0 帧）/ 饱和度阈值边界（39 不彩色、40 彩色）/ 预设读写缓存 /
 开关与恢复出厂 / `flash_tl` 对齐还原 /
-**双语跳过与开关（T34-T35）/ 避让间距可配（T36）/ 报告时长可配（T37）**。
+**双语跳过与开关（T34-T35）/ 避让间距可配（T36）/ 报告时长可配（T37）** /
+v1.0.6 灰阶识别与共享样式表覆盖 / v1.0.7 黑边贴合（T48-T51）。
+
+T48-T51 用 32×200 合成帧（上下各 12 行纯黑、中央 128 灰）走 `screenshot-raw('video')`
+逐行亮度检测，覆盖：主轨 100 / 次轨 0 / 两轨限缩倍率 / `sub-margin-y` 居中且为整数 /
+开关关闭还原基线 / 手动改位置缩放与外部改属性让位 / `reset` 与 `end-file` 还原 /
+暗场、无黑边、黑边过薄、单侧黑边四类误判守卫 / 菜单入口。
+其中 `t48-report-restored-after-osd-nudge` 验证黑边重绘的 OSD 微扰不会清掉左上角检测报告。
 
 变异验证（2026-10-22，证明上述新用例有牙）：
 双语跳过恒不生效 → 3 用例红；`pos_min_gap` 硬编码 25 → T36 红；
 `report_ms` 硬编码 6000 → T37 红。
 
-### 11.2 真机 E2E（`tools/sub-style-e2e.py`，三阶段）
+### 11.2 真机 E2E（`tools/sub-style-e2e.py`）
 
 **阶段一（双字幕轨 + 视觉判据）**：25 条探针断言 + 截图波段分析
 （主字幕带 y136-161、次字幕带 y220-244，证明分轨字体/字号互不影响）。
@@ -386,6 +426,29 @@ E2E 有还原断言。
 > ⚠ 每个用例前必须清 `uosc-subtitle-style-state.json`：persist=true 会让上一个用例退出时
 > `save_state()` 写下的状态被下一个进程继承（产品设计，测试要干净起点）。
 > ⚠ 视觉判据依赖 Pillow，用系统 Python（`C:\Python314\python.exe`）运行 E2E。
+
+**阶段四（v1.0.6 回归，`sub-style-probe-pos.lua`）**：`sub-style-smoke-pos-gray.ass`
+把灰色主色 `#8B8B8B` 和带 `\pos` 的顶部字幕放进同一夹具，10 条断言集中复现用户报障：
+灰色自动转白、顶部 `\pos` 字幕随样式表变色、`color "#000000"` 不再被注释吞掉、
+`FontName` 写进共享列表。顶部字幕像素由 `screenshot-raw` 差分统计。
+
+**阶段五（v1.0.7 黑边贴合，`sub-style-probe-bars.lua`）**：
+用 Pillow 生成 640×360、上下各 24px **编码进画面**的黑条图片当视频帧，加载双轨 SRT
+（普通对白，无 `\pos`），命令行给 `--sub-margin-y=80` 让关闭贴合时字幕明显压在画面上。
+探针**轮询**等自动检测落定（图片 + pause 模式 `file-loaded` 会晚到，固定延时会造成
+「先关开关、timer 后到」竞态），然后对比开关前后 `screenshot-raw` 差分像素分布。
+本机实测：
+
+| 状态 | 上黑边 top | 画面区 mid | 下黑边 bottom |
+| --- | --- | --- | --- |
+| 关闭贴合（BASE） | 362 | **653** | 0 |
+| 开启贴合（FIT，`scale=0.72`、`margin=2`） | 230 | **0** | 319 |
+
+画面区差分归零，即字幕完全不遮挡视频内容；上下黑边各有一条字幕。
+Python 侧另解析 `BARS BASE/FIT` 行做独立复核，不依赖探针自身判定。
+
+> ⚠ 第三方 submodule（`uosc_danmaku` 等）自身的 Lua error 由 `lua_errors()` 按日志
+> 标签隔离，被测脚本与探针的任何报错仍然 FAIL；PASS 明细里显式输出忽略行数。
 
 ### 11.3 配置门禁（`tools/sub-style-conf-verify.py`）
 
@@ -425,6 +488,11 @@ yes|no|true|false / R3 数值项必须能 parse / R4 字符串项值含 `#` 即�
 | 首次字体枚举冷扫 ~~/fonts（719MB）可超过 1.5s | 探针对首次 `open-fonts` 的检查等待放到 3.5s |
 | Pillow 只在系统 Python（`C:\Python314`）可用 | E2E 视觉判据须用系统 Python 跑；缺 PIL 时明确退出 |
 | **mpv conf 不支持行尾注释**（`key=value  # 注释` 整段被当值） | conf 注释一律独立行；`sub-style-conf-verify.py` 门禁防回归（布尔报错回落默认值、字符串静默吃注释，都会被默认值/包含匹配巧合掩盖） |
+| `mp.command('... color #FFFFFF')` 里 `#` 起注释，参数整段丢失 | uosc 菜单 value 必须 `menu_cmd()` 加双引号；实测裸值收到 `["color"]`，加引号收到 `["color","#FFFFFF"]` |
+| `force` 对带 `\pos` 的 `explicit` ASS 事件完全无效 | 顶部 signs 不换字体/颜色；`strip` 会丢 `\pos`；只有 `sub-ass-style-overrides` 的 `FontName/PrimaryColour/OutlineColour` 能改（TOP 黄 1037px → 白 727px 实证） |
+| `sub-margin-y` 是 INT，`set_property_native` 传 `2.4` 被静默忽略（属性停在 80），传 `5` 生效 | `compute_barfit` 的 margin 必须四舍五入；本 bug 曾让「属性看得到、画面不动」 |
+| 示例视频 3840×2160 上下各 120px 黑条是**编码进画面**的，`osd-dimensions.mt/mb=0` | mpv 原生 margins 帮不上忙；只能逐行亮度扫描视频帧。实测自动贴合后 `scale=0.6`、`margin=2` |
+| 灰色 `#8B8B8B` 饱和度为 0，旧「彩色」判据会当成标准白字黑边跳过 | `is_gray_hex()` + `preset_include_gray` 单独识别非纯白/纯黑灰阶 |
 
 ---
 
@@ -432,8 +500,9 @@ yes|no|true|false / R3 数值项必须能 parse / R4 字符串项值含 `#` 即�
 
 1. **粗体不分轨**（mpv 无分轨粗体通道），加粗会触发一次解码器重建；
 2. **图形字幕（PGS/VOBSUB）** 不走 libass，位置/缩放/样式均不可调（菜单会提示）；
-3. **force 模式的副带效果**：目标轨对白幕同时按 `--sub-*` 配色渲染
-   （带 `\pos` 的 signs 因 `explicit` 豁免，不受影响）；
+3. **force 模式的副带效果**：目标轨普通对白幕同时按 `--sub-*` 配色渲染；
+   带 `\pos` 的 signs 因 `explicit` 豁免，不受 force 影响 —— v1.0.6 起可用
+   `style_override_all=yes` 改写 `sub-ass-style-overrides` 让它们一起变（两轨同变）；
 4. **首次样式编辑**必然重建一次（进入 force），此后稳态编辑零重建；
 5. 字体族名以 sfnt name 表为准；若某字体族名与实际渲染名不一致，可能匹配失败；
 6. **次字幕若是文本字幕（SRT）或处于 `strip` 模式**，其外观由共享的 `--sub-*` 通道决定，
@@ -447,6 +516,15 @@ yes|no|true|false / R3 数值项必须能 parse / R4 字符串项值含 `#` 即�
    `uosc-subtitle-style-state.json`（否则上个用例的 force/白字会被带进下个用例）。
 10. **conf 行尾注释**（见 §11.3）：mpv 不支持 `key=value  # 注释`；改 conf 后
     必须跑 `python tools/sub-style-conf-verify.py` + 真机冒烟（grep `error converting`）。
+11. **带 `\pos` 的 explicit ASS 事件位置不可调**：`sub-pos` / `sub-scale` /
+    `sub-margin-y` 对它全部豁免（本机对示例视频做 9 组参数标定，字幕盒 y 范围恒为
+    1858..2038）。黑边贴合只承诺普通 ASS 对白 / SRT / 双轨默认位置；这类 signs
+    保持原位，不 strip、不重写事件（strip 会丢定位）。
+12. **黑边检测的画面依赖**：靠 `screenshot-raw('video')` 逐行亮度，若画面尚未渲染
+    （刚 file-loaded / 全黑淡入）会检测失败；中央亮度守卫防整帧暗场误判，
+    失败时不改写任何属性，可用菜单「重新检测上下黑边」手动触发。
+13. **`sub-ass-style-overrides` 列表变化会重建一次解码器**：这是覆盖 `\pos` 字幕的
+    代价；不希望两轨同变或想零重建时，关掉「顶部/定位字幕一并改样式」。
 
 ---
 
@@ -553,3 +631,87 @@ is_colored_hex(主色) or is_colored_hex(真实暗描边)
   但 e2e 是**仓库模式变体**（仓库版 `--config-dir=ROOT`，主项目版是用户配置模式），
   直接 `cp` 会悄悄毁掉仓库模式。做法：`git checkout HEAD -- <file>` 恢复仓库版，
   再按仓库版重打（fixture 路径用 `ROOT` 而非 `PORTABLE`），改完 `cmp` 逐个校验。
+
+---
+
+## 15. v1.0.6：四条报障的根因与修复链路
+
+用户报障：点击样式没反应 / 字体切换后内封与外挂字幕都没变化 / 点主颜色左上角显示
+「恢复字幕原样」/ 顶部对话字幕有时不转黑白 / 主颜色没有黑色 / 灰色字幕也要自动转黑白。
+
+| 现象 | 实证根因 | 修复 |
+| --- | --- | --- |
+| 点主颜色变成「恢复原样」 | uosc 菜单 value 是命令字符串，`mp.command()` 把裸 `#FFFFFF` 当注释，参数丢失 → `set_color(nil)` | `menu_cmd()` 给含 `#`/`;` 的参数加双引号；注册器兼容无 `#` 的裸 hex |
+| 字体/主色对内封 ASS 无效；顶部字幕不变 | `force` 只覆盖 `!explicit`，示例视频 `sid=3` 是带 `\pos` 的 explicit ASS；实测 force 前后差分像素不变 | `style_override_all` 打开时把 `FontName/PrimaryColour/OutlineColour` 写入 `sub-ass-style-overrides` |
+| 灰色 `#8B8B8B` 不自动转黑白 | 旧判据只看饱和度，灰阶饱和度为 0 被当成「标准白字黑边」 | `is_gray_hex()` + `preset_include_gray` + `needs_preset()`，并加 `toggle-gray` |
+| 点完样式菜单就关、看不到选中态 | uosc 根级 `keep_open` 未开，且改完没有刷新菜单 | 根级 `keep_open=true`；`flash()` 调 `refresh_menu()`（`update-menu` 保留滚动与搜索状态） |
+
+同时：`colors` 候选补 `黑=#000000` 与三级灰阶（脚本内 `o.colors` 默认值同步，
+避免无 conf 环境缺黑色）；新增 `toggle-all` 让用户可以退出「共享样式表」模式。
+
+回归：`tools/sub-style-smoke-pos-gray.ass`（灰主色 + `\pos` 顶部事件）、
+`tools/sub-style-probe-pos.lua`（10 条真机断言）、E2E 阶段四、
+`sub-style-probe.lua` 的判据从 `font-not-leaked-to-shared-list` 改成
+`font-in-shared-list-for-pos-signs` + `toggle-all-clears-shared-style`
+（视觉分轨字体断言前先关共享覆盖，否则主轨像素会被共享 `FontName` 带偏）。
+
+---
+
+## 16. v1.0.7：视频内嵌上下黑边贴合
+
+### 16.1 为什么必须自己检测黑边
+
+示例视频 `Dead-End...mkv` 是 3840×2160，上下各 120px 黑条**编码在画面里**，
+`osd-dimensions.mt/mb = 0`；`sub-use-margins` / `sub-ass-force-margins` 处理的是
+窗口/全屏 letterbox，对这类 baked-in bars 完全无效。只有读视频帧像素才知道黑条在哪。
+
+### 16.2 检测与布局
+
+```
+detect_bars(screenshot-raw('video'))
+  逐行平均亮度 = 0.299R + 0.587G + 0.114B（列步长 letterbox_sample_step）
+  守卫：中央 40%~60% 平均亮度 < dark_luma×2 ⇒ 整帧暗场/淡入淡出，返回 nil
+  顶部扫前 45% 的连续暗行、底部倒扫后 45% ⇒ top_frac / bottom_frac
+        ↓ compute_barfit（纯函数，可单测）
+  min_bar 过滤过薄黑边；取上下较薄一侧 bar_frac
+  usable_px = frame_h × bar_frac × (1 - pad)
+  unit      = sub-font-size × 1.2 × (frame_h / 720)      # 实测字幕盒高估算
+  scale     = clamp(usable_px / unit, 0.1, 3)，且不超过 1（黑条够宽不放大）
+  margin_y  = round((frame_h×bar_frac - unit×scale) / 2 / (frame_h/720))   # 必须取整
+        ↓ apply_all
+  主轨 sub-pos=100 / 次轨 secondary-sub-pos=0，两轨 scale 相同
+  共享 sub-margin-y = margin_y（上下对称，一条 margin 同时服务两轨）
+        ↓ nudge_reconfigure()
+  sub-margin-y / sub-scale 无 UPDATE flag，需 show-text ' ' 60 触发 configure_ass
+```
+
+### 16.3 生命周期（per-file 覆盖层，不落状态文件）
+
+- `barfit` 只在当前文件有效，优先级高于 CN+JP 双语布局；
+- `barfit_gen` 在 `end-file` / `file-loaded` 自增，作废上个文件遗留的检测定时器；
+- 触发时机：`file-loaded` 后 `inspect_delay + letterbox_delay`；菜单
+  「重新检测上下黑边」可随时手动重跑；
+- **让位**：用户手动 `set_pos` / `set_scale`、`adopt_external`（r/t 键或别的脚本改属性）、
+  `reset_style` 都会 `disable_barfit()`；
+- **还原**：`disable_barfit()` 把共享的 `sub-margin-y` 还回 `baseline.margin_y`
+  并 `nudge_reconfigure()`，否则会跨文件泄漏、且画面停在上个位置不动；
+- **报告补回**：黑边重绘的 OSD 微扰会清掉左上角检测报告，
+  `last_report_text` 在 `refresh_barfit()` 末尾把原报告重新 `show-text` 一遍。
+
+### 16.4 配置（`script-opts/uosc_subtitle_style.conf`）
+
+`letterbox_fit` / `letterbox_min_bar` / `letterbox_dark_luma` / `letterbox_pad` /
+`letterbox_sample_step` / `letterbox_delay`，默认开启、菜单可关。
+
+### 16.5 硬边界与真机结果
+
+带 `\pos` 的 explicit ASS 事件对 `sub-pos` / `sub-scale` / `sub-margin-y` 全部豁免，
+保持原位（用户确认的实现范围，不 strip、不重写事件）；窗口 letterbox 交给 mpv 原生。
+
+| 场景 | 结果 |
+| --- | --- |
+| 合成 640×360 上下 24px 黑条 + 双轨 SRT | BASE 画面区 653 字幕像素 → FIT **0**；上黑边 230 / 下黑边 319（E2E 阶段五） |
+| 示例视频 4K 上下 120px 黑条、内封 ASS | 自动检测 `scale=0.6` / `margin=2` / 主轨 `pos=100`，无脚本报错，播放不中断（osd mt/mb=0） |
+
+E2E 阶段五还会校验 `sub-margin-y` 是整数 —— 这是真机踩过的坑：
+`mp.set_property_native('sub-margin-y', 2.4)` 会被 mpv 静默忽略。
