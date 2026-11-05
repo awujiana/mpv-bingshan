@@ -935,10 +935,9 @@ BARS   00-fit                 n=1265 h=17 ov=Fontsize=18  ← 自动缩小
 
 ## 19. v1.0.10：对外 API 与上下黑边双对话字幕自适应判据
 
-> 完整调用契约（字段表、错误码、示例、版本兼容承诺）见
-> [`docs/api-uosc-subtitle-style.md`](../docs/api-uosc-subtitle-style.md)（本文件同目录，
-> 写作 [`api-uosc-subtitle-style.md`](api-uosc-subtitle-style.md)）。
-> 姊妹实现：`scripts/uosc_staff_credits/docs/EXTERNAL_API.md`。
+> 完整调用契约（字段表、错误码、示例、版本兼容承诺）见同目录的
+> [`api-uosc-subtitle-style.md`](api-uosc-subtitle-style.md)。
+> 姊妹实现：[`scripts/uosc_staff_credits/docs/EXTERNAL_API.md`](../scripts/uosc_staff_credits/docs/EXTERNAL_API.md)。
 
 ### 19.1 为什么要做对外 API
 
