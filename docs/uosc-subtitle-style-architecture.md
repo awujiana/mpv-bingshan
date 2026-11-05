@@ -932,3 +932,102 @@ BARS   00-fit                 n=1265 h=17 ov=Fontsize=18  ← 自动缩小
 > ⚠ 改本脚本功能必须同步递增文件头 `-- @version: X.Y.Z`：
 > `script-modules/updater.lua` 以它判定本地版本，本地 ≥ 远端时不更新、禁止降级。
 > 本次 v1.0.8 → **v1.0.9**。
+
+## 19. v1.0.10：对外 API 与上下黑边双对话字幕自适应判据
+
+> 完整调用契约（字段表、错误码、示例、版本兼容承诺）见
+> [`docs/api-uosc-subtitle-style.md`](../docs/api-uosc-subtitle-style.md)（本文件同目录，
+> 写作 [`api-uosc-subtitle-style.md`](api-uosc-subtitle-style.md)）。
+> 姊妹实现：`scripts/uosc_staff_credits/docs/EXTERNAL_API.md`。
+
+### 19.1 为什么要做对外 API
+
+v1.0.7 之后，脚本内部积累了大量「外部脚本想知道但拿不到」的状态：
+黑边是否贴合、限缩倍率是多少、两轨各自的 `pos/scale/size`、`\pos` 通道是否激活、
+运行时开关与预设内容。这些值散落在 `state` / `runtime` / `preset` / `barfit` 四个局部表里，
+且部分需要调 `barfit_active()` / `ass_channel_active()` 才能求出真值。
+外部脚本此前只能靠 `script-message-to` 盲发动作再读 mpv 属性反推，
+对 `sub-ass-style-overrides` 这类共享覆盖尤其容易推错。
+
+设计约束（与 §4「mpv 能力矩阵」、§10「稳态零重建」保持一致）：
+
+- **纯附加**：不改动任何既有 `script-message` 入口的参数与副作用；
+- **只读优先**：`get-state` / `get` 只读内存表，**不写任何字幕属性**；
+- **不新增写入路径**：`call` 只是把请求转发给**已注册**的原生入口，由原入口负责写属性，
+  因此不会绕过归属权模型、让位逻辑、`nudge_reconfigure()`、`factor == 1` 清理等既有不变量；
+- **不依赖 uosc**：`user-data` + `script-message` 是 mpv 原生能力，无 uosc 时全部可用。
+
+### 19.2 三条通道的实现
+
+| 通道 | 代码 | 关键点 |
+| --- | --- | --- |
+| 状态广播 | `publish_api_state()` | `utils.format_json(api_snapshot())` → `mp.set_property_native('user-data/uosc_subtitle_style/state', json)` |
+| 请求-响应 | `mp.register_script_message('api', ...)` | `api_reply()` 用 `mp.command_native` **数组形式**发 `script-message-to`，JSON 中的空格/引号不经命令字符串解析 |
+| 动作转发 | `API_CALLS` 白名单 | 28 项既有入口；**刻意不含 `api` / `uosc-version`**，防外部递归或伪造 uosc 可用性 |
+
+`publish_api_state` 用**前向声明**（脚本第 204 行）：`apply_all()` 与 `flash()` 的定义位置
+在它之前，必须在两处入口以 `if publish_api_state then pcall(publish_api_state) end` 调用，
+这样任何菜单动作、自动预设、黑边重算、OSD 提示都会自动刷新广播，无需在每个 handler 里补一行。
+快照读的是 `state` 表而非 mpv 属性，所以放在 `apply_all()` **最开头**发布也不会读到半写入状态——
+订阅者拿到的是「本次动作的意图」，属性写完后的真值由下一次广播或 `get-state` 给出。
+
+> ⚠ **`user-data` 是 mpv 的 node 属性**。真机首轮探针 5 条失败全部源于此：
+> `mp.get_property()` 得到 `"1.0.0"`（带引号），`state` 直接 `parse_json` 报错；
+> `observe_property(..., 'string')` 同理。必须 `get_property_native()` /
+> `observe_property(..., 'native')`。修正后 14/14 PASS，见
+> `tools/sub-style-probe-api.lua` 的 `api-userdata-version-is-native-string` /
+> `api-subscribe-native-observer` 断言。
+
+**失败隔离**：`format_json` / `set_property_native` / `command_native` 全部 `pcall`；
+`reply_to` / `request_id` 用 `valid_token()` 限制 `[A-Za-z0-9_.-]` 且 ≤128 字符，
+非法时只写 `warn` **不向未知目标发消息**（避免命令注入）；
+`call` 转发失败回 `dispatch_failed`，不影响字幕主流程。
+旧版 mpv 不支持写 `user-data` 时广播通道静默失效，但请求-响应仍可用。
+
+### 19.3 API 版本与脚本版本解耦
+
+| 标识 | 当前值 | 何时递增 |
+| --- | --- | --- |
+| `-- @version:`（脚本头） | `1.0.10` | **任何**功能改动，否则自更新器误判本地版本（§18.7） |
+| `API_VERSION`（对外契约） | `1.0.0` | 仅不兼容改动：删字段/改类型 → MINOR，改调用格式或回复消息名 → MAJOR |
+
+新增可选字段不升 API 版本；`list-actions` 动态返回白名单，调用方不必硬编码数量。
+
+### 19.4 T55：上下黑边双对话字幕字号自适应
+
+T48~T51 只验证 `12/12` 对称黑边下的**一档**限缩与让位，
+回答不了「上下黑边不等高时按哪一侧算」「两条对白是不是同样大」「会不会溢出」。
+T55 用 `bars_env()` 合成 `32×200` 帧（中段亮度 128），横向比较四种黑边：
+
+```text
+font_size=50 ⇒ unit = 50 × 1.2 × (200/720) = 16.667px
+usable      = 200 × min(top,bottom)/200 × (1 - pad=0.10)
+```
+
+| 黑边 top/bottom | 期望 `sub-scale` | 判据 |
+| --- | --- | --- |
+| `12/12` | `0.648` | 对照组，与 T48 一致 |
+| `6/6` | `0.324` | 黑边减半，倍率同比减半 |
+| `18/6` | `0.324` | **取较薄一侧**，与 `6/6` 完全一致 |
+| `30/30` | `1` | 够宽时**不放大**，只居中 |
+
+18 条断言分八组：① 对称基线；② 薄黑边同比缩小；③ 不等高取较薄侧 +
+两轨 `sub-scale` 完全相等；④ 宽黑边不放大；⑤ 四种情况逐一验证
+`box = scale × unit ≤ bar_px × (1-pad)`（自适应不溢出）；
+⑥ 主轨 `sub-pos=100` 占下黑边、次轨 `secondary-sub-pos=0` 占上黑边，
+`sub-margin-y` 为整数（§16 的 INT 硬约束）且非负；
+⑦ **T54 ↔ T55 联动**：`get-state` 快照里的 `barfit_active` / `barfit.scale` /
+`barfit.top` / `barfit.bottom` 必须与真实属性一致；
+⑧ 关贴合后 `sub-margin-y` 还原基线 `34`、`sub-scale` 还原 `1`——
+保证「用户手动放大保存到全局预设」不会被自动缩放再次压回去（呼应 §18.4）。
+
+### 19.5 门禁与真机
+
+| 层 | 位置 | 结果 |
+| --- | --- | --- |
+| 单测 | `tools/sub-style-test.lua` T54（20 条）+ T55（18 条） | 290 → **328 条全绿** |
+| 真机 E2E | `tools/sub-style-e2e.py` 第 5f 组 + `tools/sub-style-probe-api.lua` | 两个脚本共 **21 条**（字幕 14 + 职员表 7）全绿 |
+| 子仓库自测 | `scripts/uosc_staff_credits/tests/external_api/main.lua` | **26 条全绿**（含 `build-no-token-leak` 字面量检查） |
+| 语法 / 配置 | `lua-syntax-check.lua`（196 文件）/ `sub-style-conf-verify.py` | 全绿；v1.0.10 **未新增 conf 键** |
+
+> 本次 v1.0.9 → **v1.0.10**。

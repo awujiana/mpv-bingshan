@@ -32,6 +32,57 @@ PS：自行编辑配置文件时，注意编码格式应为 UTF-8，换行符为
 
 本项目涉及的着色器见 mpv.conf 中相关内容
 
+### 脚本公开仓库
+
+本配置中由 **awujiana** 维护的脚本均以独立公开仓库发布，可单独订阅、提 issue 或跟进 Release；
+下表按 awujiana 仓库优先排列，随后才是上游/第三方仓库（完整鸣谢见文末）。
+
+#### 一、awujiana 维护（本项目自建 / 分叉维护）
+
+| 仓库 | 对应本配置路径 | 说明 |
+| --- | --- | --- |
+| [awujiana/mpv-bingshan](https://github.com/awujiana/mpv-bingshan) | 仓库根 | **本配置仓库**（`portable_config` 开箱即用发布副本） |
+| [awujiana/uosc_subtitle_style](https://github.com/awujiana/uosc_subtitle_style) | `scripts/uosc_subtitle_style.lua` | 内封字幕样式切换：主/次分轨、黑白预设、上下黑边贴合、ASS `Fontsize` 缩放、对外 API |
+| [awujiana/uosc-staff-credits](https://github.com/awujiana/uosc-staff-credits) | `scripts/uosc_staff_credits/` | Bangumi 职员表 / 角色介绍 / 封面简介 / 制作评分，含对外 API |
+| [awujiana/uosc_danmaku](https://github.com/awujiana/uosc_danmaku) | `scripts/uosc_danmaku/` | 弹弹play 弹幕加载、延迟与保存（submodule） |
+| [awujiana/mpv-script-updater](https://github.com/awujiana/mpv-script-updater) | `script-modules/updater.lua` | 公共自更新模块 + 《脚本更新规范》 + 单测 / E2E / 变异测试，**唯一权威来源** |
+| [awujiana/neve](https://github.com/awujiana/neve) | —（外部工具） | mpv 播放器管理器：液态玻璃组件库、脚本/皮肤/备份同步、uosc 预览 |
+
+> 前两个脚本与公共更新模块都带 `-- @version:` 文件头，由 `scripts/uosc_updater.lua`
+> 静默检查 GitHub Release / git 上游；同版本不更新、本地更新时禁止降级。
+> 契约文档：[字幕样式 API](docs/api-uosc-subtitle-style.md) ·
+> [职员表 API](scripts/uosc_staff_credits/docs/EXTERNAL_API.md) ·
+> [架构](docs/uosc-subtitle-style-architecture.md) · [自更新](docs/uosc-updater.md)。
+
+**开箱即用发布副本**：GitHub `awujiana/mpv-bingshan` 的 `main` 是**生成出来的干净配置树**，
+不含 `.gitattributes` / `.gitignore` / `.gitmodules` / `.workbuddy-ai` / 视频 / 日志 /
+`danmaku-search-history` / 运行时 json；两个 subgitlink 已展开成**实体脚本文件**，
+下载 zip 解压即可用（早期版本 zip 里这两个目录是空的）。
+生成与校验由 `tools/publish-mpv-bingshan.py` 负责：
+
+```bash
+/c/Python314/python.exe tools/publish-mpv-bingshan.py export <目标目录>  # 纯文件副本
+/c/Python314/python.exe tools/publish-mpv-bingshan.py index              # 重写索引为发布树
+/c/Python314/python.exe tools/publish-mpv-bingshan.py verify             # 校验无排除项/无 gitlink
+```
+
+文件内容直接从 git object DB 读取，与仓库 blob 字节一致（UTF-8 + LF），
+不会被 Windows CRLF 污染。
+
+#### 二、上游 / 第三方仓库（本配置所依赖）
+
+| 仓库 | 用途 |
+| --- | --- |
+| [dyphire/mpv-config](https://github.com/dyphire/mpv-config) | 本配置的上游基础：mpv.conf / input.conf / 脚本集 / wiki / 整合包 |
+| [Tony15246/uosc_danmaku](https://github.com/Tony15246/uosc_danmaku) | 弹幕脚本的上游原作（`awujiana/uosc_danmaku` 由此分叉维护） |
+| [tomasklaen/uosc](https://github.com/tomasklaen/uosc) | `scripts/uosc/` UI 框架，所有 uosc 菜单的宿主 |
+| [mpv-player/mpv](https://github.com/mpv-player/mpv) | 播放器本体与 `TOOLS/lua` 官方脚本 |
+| [CogentRedTester/mpv-file-browser](https://github.com/CogentRedTester/mpv-file-browser) | `scripts/file-browser/` |
+| [po5/evafast](https://github.com/po5/evafast) · [po5/trackselect](https://github.com/po5/trackselect) | `evafast.lua` / `trackselect.lua` |
+| [Eisa01/mpv-scripts](https://github.com/Eisa01/mpv-scripts) | `simplebookmark` / `simplehistory` / `undoredo` 等 |
+| [christoph-heinrich/mpv-quality-menu](https://github.com/christoph-heinrich/mpv-quality-menu) | `quality-menu.lua` |
+| [tsl0922/mpv-dyn_menu](https://github.com/tsl0922/mpv-dyn_menu) | `dyn_menu.lua` |
+
 ### 本地脚本与上游 wiki 说明的差异核对
 
 核对基准：上游 wiki「脚本说明」（2025-03-19 版，共 50 条脚本条目）。
@@ -106,7 +157,7 @@ PS：自行编辑配置文件时，注意编码格式应为 UTF-8，换行符为
   且有 17 个本地脚本根本不在 wiki 中。
 - **本 README 的核对内容即为差异清单**，后续新增/升级脚本时请同步更新本节。
 
-### 内封字幕样式切换（scripts/uosc_subtitle_style.lua，主/次字幕分轨，v1.0.9）
+### 内封字幕样式切换（scripts/uosc_subtitle_style.lua，主/次字幕分轨，v1.0.10）
 
 把字幕在 **原位 / 中下 / 中部 / 中上 / 顶部** 之间切换，可整体缩放、改字体、字号、粗体、
 **描边粗细与描边颜色**；**主字幕（sid）与次字幕（secondary-sid）分轨独立调整**，
@@ -141,12 +192,46 @@ PS：自行编辑配置文件时，注意编码格式应为 UTF-8，换行符为
     带 `\pos` 的定位字幕保持原位，位置改动时 OSD 明说「请用字号/缩放调整」。
   - 「其它 → 内封定位字幕可缩放/改字号」(`ass-fontsize-toggle`) 可一键退回原生通道；
     关闭时真机能复现原报障（`sub-scale=1.5` 但 `\pos` 字幕画面纹丝不动）。
+- **v1.0.10**：① **上下黑边双对话字幕字号自适应判据**——横向比较 `12/12`、`6/6`、
+  `18/6`、`30/30` 四种黑边，证明限缩倍率由**较薄一侧**决定、上下两条对白用**同一倍率**
+  且字幕盒都不溢出黑边，宽黑边只居中不放大；结果同步进对外 API 快照。
+  ② **对外输出 API**（`1.0.0`）：`user-data` 状态广播 + 请求-响应 + 白名单动作转发，
+  别的脚本可读黑边贴合倍率、两轨样式、运行时/预设开关并触发菜单动作。
+  契约见 [`docs/api-uosc-subtitle-style.md`](docs/api-uosc-subtitle-style.md)。
 
   > 若你的 mpv 仍显示旧的「非彩色字幕，保持原样」文案，说明内存里跑的还是被自更新器
-  > 降级过的 v1.0.5 —— **重启播放器**即可加载 v1.0.9。
+  > 降级过的 v1.0.5 —— **重启播放器**即可加载 v1.0.10。
 
 > 架构细节（数据模型、mpv 能力矩阵、应用引擎、字体枚举、测试体系）见
 > [`docs/uosc-subtitle-style-architecture.md`](docs/uosc-subtitle-style-architecture.md)。
+
+**对外 API（v1.0.10 新增）**
+
+两个自研脚本都提供同名契约，供其它 mpv 脚本 / `input.conf` / 外部工具集成，**不依赖 uosc**：
+
+| 脚本 | 目标名 | 契约文档 |
+| --- | --- | --- |
+| `uosc_subtitle_style` | `uosc_subtitle_style` | [`docs/api-uosc-subtitle-style.md`](docs/api-uosc-subtitle-style.md) |
+| `uosc_staff_credits` | `uosc_staff_credits` | [`scripts/uosc_staff_credits/docs/EXTERNAL_API.md`](scripts/uosc_staff_credits/docs/EXTERNAL_API.md) |
+
+```text
+# 订阅（node 属性必须 native）
+mp.observe_property('user-data/uosc_subtitle_style/state', 'native', fn)
+# 请求-响应
+script-message-to uosc_subtitle_style api <reply_to> <request_id> get-state
+script-message-to uosc_subtitle_style api <reply_to> <request_id> get barfit.scale
+script-message-to uosc_subtitle_style api <reply_to> <request_id> call nudge -5
+```
+
+- 回复消息名 `<脚本名>-api-response`，`get-state` / `get` / `list-actions` / `call` 四类 action；
+- `call` 只转发白名单内的**既有入口**（字幕脚本 28 项、职员表 16 项），**不含 `api` 自身**，防递归；
+- 纯附加：v1.0.9 及更早的所有 `script-message` 入口参数与副作用**原样保留**；
+- 只读快照 + 转发，**不新增任何字幕属性写入路径**，不会触发解码器重建；
+- `user-data` 是 mpv node 属性，`get_property()` / `observe_property(..., 'string')` 会拿到
+  带引号二次转义的文本，必须用 `get_property_native()` / `'native'`；
+- 职员表快照逐字段白名单，**不输出 token / api key / 原始响应 / 缓存正文**。
+
+真机双脚本共 21 条断言见 `tools/sub-style-probe-api.lua`（并入 `sub-style-e2e.py`）。
 
 **入口**
 - uosc 工具栏：字幕按钮左侧的「字幕样式」按钮（`script-opts/uosc.conf` 的 `controls=`，
@@ -268,14 +353,21 @@ PS：自行编辑配置文件时，注意编码格式应为 UTF-8，换行符为
   上/下黑边分别 `230` / `319`，即画面主体完全不被遮挡。
 
 **测试**
-- `../luajit.exe tools/sub-style-test.lua` —— **290 项单测**（含字体解析器合成 sfnt/TTC 字节流、
+- `../luajit.exe tools/sub-style-test.lua` —— **328 项单测**（含字体解析器合成 sfnt/TTC 字节流、
   位置避让、稳态编辑不重建、ASS 解析/像素采样/饱和度阈值、灰阶识别与 `\pos` 样式表覆盖、
   预设读写与开关、双语跳过与开关、避让间距/报告时长可配、菜单项、
   T48–T51 上下黑边检测/布局/让位/菜单、
   T52 全内封轨检查：报告统计 / 切轨重检 / 灰色识别关闭仍套用 / 白字·外挂·关开关保持旧行为；
   T53 内封定位 ASS 的 Fontsize 通道：`sub-ass-extradata` 解析 / 缩放与字号折算 /
   `sub-scale` 归 1 / ±1px 连续微调与边界 / 点回基线清掉无效覆盖 /
-  外挂与无样式表零回归 / 运行时开关 / 黑边按 ASS 原始字号估算 / 放大存全局预设）
+  外挂与无样式表零回归 / 运行时开关 / 黑边按 ASS 原始字号估算 / 放大存全局预设；
+  T54 对外 API：注册/初始广播、`get-state` 形状与 id 回填、`get` 点号路径命中与未命中、
+  非法 token 不回复、未知 action、白名单不含 `api`、`call` 参数转发与拒绝递归、
+  状态变化自动刷新、原生入口零覆盖；
+  T55 上下黑边双对话字幕字号自适应：`12/12` 基线 `0.648` → `6/6` 与不等高 `18/6` 同为
+  `0.324`（取较薄一侧）、`30/30` 不放大、四种黑边字幕盒均不溢出、
+  上下两轨同倍率分别占下/上黑边、`sub-margin-y` 为整数、
+  API 快照 `barfit` 与真实属性一致、关贴合还原基线）
 - `python tools/sub-style-conf-verify.py` —— conf 静态门禁：按 mpv 解析语义复算
   `script-opts/uosc_subtitle_style.conf`（键集合与脚本 o 表对齐、布尔/数值/颜色格式、
   **行尾注释检测**——mpv 不支持 `key=value  # 注释`，会被整段吃进值里）
@@ -299,7 +391,12 @@ PS：自行编辑配置文件时，注意编码格式应为 UTF-8，换行符为
      `Fontsize=30`、`sub-scale=1`、上字幕带像素 `1509 → 2660`（缩放 ×1.5）；
      `size-step +8` → `1846`；关通道后 `sub-scale=1.5` 但画面仍 `1509`（复现原报障）；
      黑边贴合 `Fontsize=18`、像素 `1509 → 1265`，点放大写入全局预设、关贴合后还原 `1508`
+  ⑧ v1.0.10 对外 API：`tools/sub-style-probe-api.lua` 在真实 mpv 里同时验证两个脚本的
+     `user-data`（`native` 读取 / 订阅）、`get-state` 回复与 id 回填、`get` 点号路径、
+     `call` 真正改变 `sub-pos` 并刷新广播、递归调用被拒、职员表快照无 token 泄漏、
+     `list-actions` 非空 —— 共 21 条断言；
 - 探针 `tools/sub-style-probe.lua` / `sub-style-probe-stream.lua` /
+  `sub-style-probe-api.lua` /
   `sub-style-probe-preset.lua` / `sub-style-probe-preset-save.lua` /
   `sub-style-probe-pos.lua` / `sub-style-probe-bars.lua` /
   `sub-style-probe-fontsize.lua`；
@@ -375,6 +472,39 @@ E2E 第三轮复现「状态已记录同版本、本地文件被外部改动」�
 | 拼音搜索（支持首字母）                                                                                    | 字幕下载                                                                                           |
 | ---------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
 | ![image](https://cdn.jsdelivr.net/gh/dyphire/PicGo/img/2023/11/03/image-20231103224614449.png) | ![image](https://cdn.jsdelivr.net/gh/dyphire/PicGo/img/2023/11/03/image-20231103224721066.png) |
+
+### 鸣谢
+
+本配置建立在大量开源项目之上，在此向所有脚本仓库的作者与维护者致谢。
+
+**特别鸣谢**
+
+- [dyphire/mpv-config](https://github.com/dyphire/mpv-config) —— 本配置的直接上游。
+  `mpv.conf`、`input.conf`、脚本集、中文 wiki 与整合包发布均源自该项目；
+  上文「本地脚本与上游 wiki 说明的差异核对」也是以它的 wiki 为基准做的逐条勘误。
+- [Tony15246/uosc_danmaku](https://github.com/Tony15246/uosc_danmaku) —— 弹幕扩展的原作。
+  本配置中的 `scripts/uosc_danmaku/` 由其分叉维护，弹弹play API 接入、弹幕延迟、
+  搜索历史等核心能力均来自该仓库。
+- [tomasklaen/uosc](https://github.com/tomasklaen/uosc) —— 整套菜单交互的宿主框架，
+  `uosc_subtitle_style` / `uosc_staff_credits` / `uosc_danmaku` 的 UI 全部基于它。
+- [mpv-player/mpv](https://github.com/mpv-player/mpv) 及 shinchiro / zhongfly / dyphire 的
+  Windows 构建 —— 播放器本体与分发。
+
+**脚本仓库鸣谢**（按本配置 `scripts/` 中出现的顺序，作者归属见上文差异核对表）
+
+`autoload`、`dynamic-crop`、`autosubsync`、`sub-assrt`、`sub_export`、`thumbfast`、
+`quality-menu`、`cycle-commands`、`delete-current-file`、`playlistmanager`、
+`simplebookmark`、`simplehistory`、`undoredo`、`sponsorblock_minimal`、
+`persist_properties`、`blacklist-extensions`、`chapterskip`、`dyn_menu`、`evafast`、
+`trackselect`、`inputevent`、`file-browser`、`thumbfast`、`uosc`、`uosc_danmaku`、
+`mpv-torrserver`、`sub-fastwhisper`、`mpv-cropscreen`、`hdr-mode`、`pip` 等脚本的
+原作者与维护者（CogentRedTester、po5、Eisa AlAwadhi、tomasklaen、
+christoph-heinrich、tsl0922、Natural-Harmonia-Gropius、d87、kelciour、
+stax76、detuur、microraptor、allecsc 等），以及
+[hooke007 的中文文档](https://github.com/hooke007/mpv_doc-CN) 与 mpv 社区。
+
+> 上游 wiki 曾把部分脚本的 `AUTHORS` 误记为 `dyphire`，本 README 的差异核对表
+> 已按源码逐条还原真实归属；如有遗漏或错误，欢迎提 issue 指正。
 
 ### 参考
 

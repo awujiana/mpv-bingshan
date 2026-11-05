@@ -1,5 +1,5 @@
 ---- uosc_subtitle_style.lua —— 内封字幕样式快速切换（uosc 菜单）
--- @version: 1.0.9
+-- @version: 1.0.10
 -- ⚠ 上面这行版本标记由 script-modules/updater.lua 读取，用来判定本地版本：
 --   本地 >= 远端时不更新、绝不降级。改动功能时请同步递增版本号，否则
 --   自更新会认为本地仍是旧版（或误判成同版本反复「已更新」）。
@@ -191,6 +191,17 @@ local runtime = {
     bar_fit = o.letterbox_fit and true or false,
     ass_fontsize = o.ass_fontsize and true or false,
 }
+
+--------------------------------------------------------------------
+-- 对外 API（v1.0.10，契约见 docs/api-uosc-subtitle-style.md）
+--   ① 订阅：user-data/uosc_subtitle_style/state（JSON）+ /version
+--   ② 请求-响应：script-message-to uosc_subtitle_style api <reply_to> <id> <action> ...
+--      → script-message-to <reply_to> uosc_subtitle_style-api-response <id> <json>
+-- 只暴露只读快照 + 白名单动作转发，不改变任何既有菜单/消息行为。
+--------------------------------------------------------------------
+local API_VERSION = '1.0.0'
+local API_PREFIX = 'uosc_subtitle_style'
+local publish_api_state  -- 前向声明：apply_all()/flash() 在定义之前就会调用
 
 -- #RRGGBB → ASS 颜色 &H00BBGGRR（sub-ass-style-overrides 里用的格式，BGR 倒序）
 local function hex_to_ass_color(hex)
@@ -1010,6 +1021,9 @@ end
 --   dance=false：文件加载阶段/pos、scale 变化——pos、scale 实测即时生效，
 --     不碰 override，无闪烁。
 local function apply_all(dance, rebuild)
+    -- 对外 API：状态快照在任何属性回写之前发布（快照读的是 state 表，
+    -- 不依赖 mpv 属性是否写完），保证订阅者拿到的是本次动作的意图。
+    if publish_api_state then pcall(publish_api_state) end
     -- 位置：**只回写本脚本拥有（用户通过菜单设过）的轨**。
     -- 未拥有的保持 mpv 当前值（配置/默认），脚本不越权覆盖。
     -- 缩放同理（两轨独立、即时生效）。
@@ -1210,6 +1224,7 @@ end
 --------------------------------------------------------------------
 
 local function flash(text)
+    if publish_api_state then pcall(publish_api_state) end
     mp.commandv('show-text', text, 3000)
     -- 菜单开启了 keep_open：改完样式立即把 active/hint 刷新回菜单，
     -- 否则用户看不到「当前选中项」变化，会以为点击没生效。
@@ -3004,3 +3019,154 @@ end)
 
 msg.info(string.format('sub-style loaded (target=%s pos=%d scale=%.2f persist=%s) %s',
     state.target, state.main.pos, state.main.scale, tostring(o.persist), style_desc()))
+
+--------------------------------------------------------------------
+-- 对外 API 实现（只读快照 + 白名单动作转发）
+-- 完整契约、字段表、调用示例见 docs/api-uosc-subtitle-style.md。
+--------------------------------------------------------------------
+
+-- 可安全由外部脚本触发的既有入口。刻意不包含 api / uosc-version，
+-- 避免外部脚本递归进入 API 通道或伪造 uosc 可用性。
+local API_CALLS = {
+    ['open-menu'] = true, ['cycle'] = true, ['target'] = true,
+    ['pos'] = true, ['scale'] = true, ['nudge'] = true,
+    ['font'] = true, ['size'] = true, ['size-step'] = true,
+    ['bold'] = true, ['outline'] = true, ['outline-color'] = true,
+    ['color'] = true, ['preset-apply'] = true, ['preset-save'] = true,
+    ['preset-reset'] = true, ['preset-toggle-colored'] = true,
+    ['preset-toggle-dual'] = true, ['preset-toggle-enabled'] = true,
+    ['toggle-gray'] = true, ['toggle-all'] = true,
+    ['letterbox-toggle'] = true, ['letterbox-refresh'] = true,
+    ['ass-fontsize-toggle'] = true, ['inspect'] = true,
+    ['style-preset'] = true, ['reset'] = true, ['fix-override'] = true,
+}
+
+local function api_snapshot()
+    local function track(k)
+        local s = state[k]
+        return {pos = s.pos, scale = s.scale, size = s.size,
+                font = s.font, bold = s.bold, color = s.color,
+                outline = s.outline, outline_color = s.outline_color,
+                pos_owned = s.pos_owned and true or false,
+                auto = s.auto and true or false}
+    end
+    local bf
+    if barfit then
+        bf = {top = barfit.top, bottom = barfit.bottom,
+              scale = barfit.scale, margin_y = barfit.margin_y}
+    end
+    return {
+        api_version = API_VERSION,
+        script_name = API_PREFIX,
+        target = state.target,
+        main = track('main'), sec = track('sec'),
+        barfit = bf, barfit_active = barfit_active(),
+        ass_fontsize_active = ass_channel_active(),
+        runtime = {override_all = runtime.override_all,
+                   include_gray = runtime.include_gray,
+                   bar_fit = runtime.bar_fit,
+                   ass_fontsize = runtime.ass_fontsize},
+        preset = {enabled = preset.enabled, only_colored = preset.only_colored,
+                  skip_dual = preset.skip_dual, color = preset.color,
+                  outline_color = preset.outline_color,
+                  outline = preset.outline, font = preset.font,
+                  size = preset.size, bold = preset.bold},
+    }
+end
+
+local function api_get(snap, key)
+    local node = snap
+    for part in tostring(key or ''):gmatch('[^%.]+') do
+        if type(node) ~= 'table' then return nil end
+        node = node[part]
+    end
+    return node
+end
+
+local function valid_token(s)
+    return type(s) == 'string' and s ~= '' and #s <= 128
+        and s:match('^[%w_%.%-]+$') ~= nil
+end
+
+local function api_reply(reply_to, request_id, payload)
+    local ok, json = pcall(utils.format_json, payload)
+    if not ok then
+        json = '{"ok":false,"error":"encode_failed"}'
+    end
+    -- command_native 数组形式不经命令字符串解析，JSON 里的空格/引号不会被拆开。
+    pcall(mp.command_native, {'script-message-to', reply_to,
+        API_PREFIX .. '-api-response', request_id, json})
+end
+
+publish_api_state = function()
+    local ok, json = pcall(utils.format_json, api_snapshot())
+    if not ok then return end
+    -- 某些旧版 mpv 不提供 user-data 写入；pcall 兜住，绝不影响主流程。
+    pcall(mp.set_property_native, 'user-data/' .. API_PREFIX .. '/state', json)
+end
+
+local function api_action_list()
+    local out = {}
+    for name in pairs(API_CALLS) do out[#out + 1] = name end
+    table.sort(out)
+    return out
+end
+
+mp.register_script_message('api', function(reply_to, request_id, action, ...)
+    -- 参数校验：回复目标/请求 id 缺失或含命令分隔符时只告警，不向未知目标发消息。
+    if not valid_token(reply_to) or not valid_token(request_id) then
+        msg.warn('api: bad reply_to/request_id: ' ..
+            tostring(reply_to) .. '/' .. tostring(request_id))
+        return
+    end
+    local function reply(p)
+        p.request_id = request_id
+        api_reply(reply_to, request_id, p)
+    end
+    local snap = api_snapshot()
+    if action == 'get-state' then
+        reply({ok = true, data = snap})
+    elseif action == 'get' then
+        local key = (...)
+        if not valid_token(key) then
+            reply({ok = false, error = 'bad_key'})
+            return
+        end
+        local v = api_get(snap, key)
+        if v == nil then
+            reply({ok = false, error = 'unknown_key', key = key})
+        else
+            reply({ok = true, key = key, value = v})
+        end
+    elseif action == 'list-actions' then
+        reply({ok = true, actions = api_action_list()})
+    elseif action == 'call' then
+        local name = (...)
+        if not valid_token(name) then
+            reply({ok = false, error = 'bad_action_name'})
+            return
+        end
+        if not API_CALLS[name] then
+            reply({ok = false, error = 'action_not_allowed', action = name})
+            return
+        end
+        -- 转发给本脚本已注册的原生入口，复用既有参数处理与副作用。
+        local args = {...}
+        local cmd = {'script-message-to', API_PREFIX, name}
+        for i = 2, #args do cmd[#cmd + 1] = tostring(args[i]) end
+        local ok = pcall(mp.command_native, cmd)
+        if not ok then
+            reply({ok = false, error = 'dispatch_failed', action = name})
+        else
+            -- call 是异步派发：返回「已派发」，实际状态变化请用订阅通道观察。
+            reply({ok = true, dispatched = name, async = true})
+        end
+    else
+        reply({ok = false, error = 'unknown_action', action = tostring(action)})
+    end
+end)
+
+-- 注册完成后发布初始状态，让晚于本脚本加载的订阅者也能立刻读到。
+pcall(mp.set_property_native, 'user-data/' .. API_PREFIX .. '/version', API_VERSION)
+pcall(publish_api_state)
+msg.info('sub-style external API ready (v' .. API_VERSION .. ')')

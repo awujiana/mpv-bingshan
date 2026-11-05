@@ -58,6 +58,7 @@ FIXTURE_BARS_MAIN = os.path.join(PORTABLE, 'tools', 'sub-style-smoke-bars-main.s
 FIXTURE_BARS_SEC = os.path.join(PORTABLE, 'tools', 'sub-style-smoke-bars-sec.srt')
 MKV_FIXTURE = os.path.join(PORTABLE, 'tools', 'sub-style-mkv-fixture.py')
 PROBE_FONTSIZE = os.path.join(PORTABLE, 'tools', 'sub-style-probe-fontsize.lua')
+PROBE_API = os.path.join(PORTABLE, 'tools', 'sub-style-probe-api.lua')
 STATE_FILE = os.path.join(PORTABLE, 'uosc-subtitle-style-state.json')
 PRESET_FILE = os.path.join(PORTABLE, 'uosc-subtitle-style-preset.json')
 FONT_CACHE = os.path.join(PORTABLE, 'uosc-subtitle-style-fonts.json')
@@ -749,6 +750,50 @@ def main():
         preset_raw = ''
     check('fs-bars-preset-file-has-size', '"size"' in preset_raw,
           preset_raw[:120])
+
+    # ---- 5f. v1.0.10 对外 API：user-data 广播 + 请求-响应 + call 真机生效 ----
+    # 复用 5e 生成的无黑边内封 ASS MKV；这一组不判像素，只判 API 契约。
+    api_log = os.path.join(workdir, 'api-log.txt')
+    api_cmd = [
+        MPV, '--script=' + PROBE_API,
+        '--vo=gpu', '--ao=null', '--pause=yes',
+        '--image-display-duration=inf',
+        '--watch-later-dir=' + watch_dir,
+        '--save-position-on-quit=no', '--no-resume-playback',
+        '--msg-level=all=info', fs_plain,
+    ]
+    print('RUN(api):', ' '.join(api_cmd))
+    aproc = subprocess.run(api_cmd, cwd=MPV_DIR, env=env,
+                           stdout=open(api_log, 'w'), stderr=subprocess.STDOUT,
+                           timeout=180)
+    print('mpv(api) exit=%d' % aproc.returncode)
+    atext = open(api_log, encoding='utf-8', errors='replace').read()
+    api_expected = (
+        'api-userdata-version', 'api-userdata-version-is-native-string',
+        'api-userdata-state-json', 'api-userdata-state-fields',
+        'api-get-state-reply', 'api-get-state-request-id',
+        'api-get-state-has-data', 'api-get-dotted-key', 'api-get-unknown-key',
+        'api-call-dispatch', 'api-call-changes-state-broadcast',
+        'api-property-pos-matches-broadcast', 'api-subscribe-native-observer',
+        'api-call-rejects-recursive',
+        # uosc_staff_credits 子仓库的对外 API（同一 mpv 实例顺带验证）
+        'staff-api-userdata-version', 'staff-api-userdata-state-json',
+        'staff-api-state-fields', 'staff-api-no-token-leak',
+        'staff-api-get-state-reply', 'staff-api-get-state-request-id',
+        'staff-api-list-actions',
+    )
+    ars = probe_of(atext)
+    for name in api_expected:
+        if name not in ars:
+            check('api-' + name, False, 'missing in log')
+        else:
+            check('api-' + name, ars[name][0] == 'PASS', ars[name][1][:150])
+    asum = re.search(r'PROBE SUMMARY pass=(\d+) fail=(\d+)', atext)
+    check('api-summary-all-ok', bool(asum) and asum.group(2) == '0',
+          asum.group(0) if asum else 'not found')
+    aerrs, aignored = lua_errors(atext)
+    check('api-no-lua-errors', len(aerrs) == 0,
+          '; '.join(aerrs[:2]) + (' | 已忽略第三方插件报错 %d 行' % aignored if aignored else ''))
 
     # ---- 6. 清理测试产物 ----
     for p in (STATE_FILE, PRESET_FILE, FONT_CACHE):

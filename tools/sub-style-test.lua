@@ -140,6 +140,7 @@ local FONT_CACHE_PATH = 'C:/fake-config/uosc-subtitle-style-fonts.json'
 local function fresh_script_env()
     env.props, env.commands, env.showtexts, env.showtext_durs = {}, {}, {}, {}
     env.messages, env.events, env.timers = {}, {}, {}
+    env.script_messages = {}   -- command_native 的 script-message-to（对外 API 回复/转发）
     env.observers = {}
     env.opt_overrides, env.vfs, env.raw_shots = {}, {}, {}
 
@@ -182,6 +183,9 @@ local function fresh_script_env()
     function mp_stub.add_timeout(_, fn) env.timers[#env.timers + 1] = fn end
     function mp_stub.unregister_event() end
     function mp_stub.command_native(t)
+        if type(t) == 'table' and t[1] == 'script-message-to' then
+            env.script_messages[#env.script_messages + 1] = t
+        end
         if type(t) == 'table' and t[1] == 'expand-path' then
             if t[2] == '~~/uosc-subtitle-style-state.json' then return STATE_PATH end
             if t[2] == '~~/uosc-subtitle-style-preset.json' then return PRESET_PATH end
@@ -2324,6 +2328,249 @@ restore53[#restore53 + 1] = r53g
 for i = #restore53, 1, -1 do restore53[i]() end
 end
 run_t53()
+
+--------------------------------------------------------------------
+-- T54：对外 API（user-data 状态广播 + api 请求-响应 + 白名单动作转发）
+--------------------------------------------------------------------
+function run_t54()
+local API_PREFIX_FOR_TEST = 'uosc_subtitle_style'
+local r54 = fresh_script_env()
+set_tracks(false)
+load_script()
+
+local STATE_KEY = 'user-data/' .. API_PREFIX_FOR_TEST .. '/state'
+local RESP = API_PREFIX_FOR_TEST .. '-api-response'
+
+local function replies()
+    local out = {}
+    for _, c in ipairs(env.script_messages or {}) do
+        if c[3] == RESP then out[#out + 1] = c end
+    end
+    return out
+end
+local function last_payload()
+    local rs = replies()
+    local c = rs[#rs]
+    return c and jdec(c[5]) or nil
+end
+local function broadcast()
+    local ok, v = pcall(jdec, env.props[STATE_KEY] or '{}')
+    return ok and v or {}
+end
+local function clear_replies() env.script_messages = {} end
+
+-- ① 注册与初始广播
+check('t54-api-message-registered', type(env.messages['api']) == 'function')
+check('t54-api-version-property',
+    env.props['user-data/' .. API_PREFIX_FOR_TEST .. '/version'] == '1.0.0',
+    tostring(env.props['user-data/' .. API_PREFIX_FOR_TEST .. '/version']))
+local snap0 = broadcast()
+check('t54-initial-state-broadcast', snap0.api_version == '1.0.0'
+    and type(snap0.main) == 'table' and type(snap0.sec) == 'table',
+    'target=' .. tostring(snap0.target))
+check('t54-snapshot-has-runtime-and-preset',
+    type(snap0.runtime) == 'table' and type(snap0.preset) == 'table')
+check('t54-snapshot-has-barfit-flag', type(snap0.barfit_active) == 'boolean')
+
+-- ② get-state 请求-响应（request_id 原样回填，回复走 command_native 数组）
+clear_replies()
+env.messages['api']('client', 'r1', 'get-state')
+local rs = replies()
+check('t54-get-state-reply-shape', #rs == 1 and rs[1][2] == 'client'
+    and rs[1][3] == RESP and rs[1][4] == 'r1', '#replies=' .. #rs)
+local p1 = last_payload()
+check('t54-get-state-ok', p1 and p1.ok == true and type(p1.data) == 'table')
+check('t54-get-state-request-id', p1 and p1.request_id == 'r1')
+
+-- ③ get 单字段：命中 / 未命中
+clear_replies()
+env.messages['api']('client', 'r2', 'get', 'main.pos')
+local p2 = last_payload()
+check('t54-get-dotted-key', p2 and p2.ok == true
+    and p2.key == 'main.pos' and type(p2.value) == 'number',
+    'value=' .. tostring(p2 and p2.value))
+clear_replies()
+env.messages['api']('client', 'r3', 'get', 'no.such.key')
+local p3 = last_payload()
+check('t54-get-unknown-key', p3 and p3.ok == false
+    and p3.error == 'unknown_key')
+clear_replies()
+env.messages['api']('client', 'r4', 'get')
+check('t54-get-bad-key', last_payload().error == 'bad_key')
+
+-- ④ 参数校验：非法 reply_to / request_id 不发往未知目标
+clear_replies()
+env.messages['api']('bad target', 'r5', 'get-state')
+env.messages['api'](nil, 'r6', 'get-state')
+env.messages['api']('client', '', 'get-state')
+check('t54-invalid-tokens-no-reply', #replies() == 0, '#replies=' .. #replies())
+
+-- ⑤ 未知 action / list-actions 不含 api 自身
+clear_replies()
+env.messages['api']('client', 'r7', 'no-such-action')
+check('t54-unknown-action', last_payload().error == 'unknown_action')
+clear_replies()
+env.messages['api']('client', 'r8', 'list-actions')
+local acts = last_payload().actions or {}
+local has_nudge, has_api = false, false
+for _, a in ipairs(acts) do
+    if a == 'nudge' then has_nudge = true end
+    if a == 'api' then has_api = true end
+end
+check('t54-list-actions-whitelist', has_nudge and not has_api,
+    'n=' .. #acts .. ' api=' .. tostring(has_api))
+
+-- ⑥ call：白名单转发 / 拒绝递归入口
+clear_replies()
+env.messages['api']('client', 'r9', 'call', 'nudge', '-5')
+local p9 = last_payload()
+check('t54-call-dispatch-ok', p9 and p9.ok == true
+    and p9.dispatched == 'nudge' and p9.async == true)
+local fwd
+for _, c in ipairs(env.script_messages) do
+    if c[2] == API_PREFIX_FOR_TEST and c[3] == 'nudge' then fwd = c end
+end
+check('t54-call-forwards-native-message',
+    fwd ~= nil and fwd[4] == '-5', fwd and table.concat(fwd, '|') or 'none')
+clear_replies()
+env.messages['api']('client', 'r10', 'call', 'api')
+check('t54-call-rejects-recursive',
+    last_payload().error == 'action_not_allowed')
+clear_replies()
+env.messages['api']('client', 'r11', 'call')
+check('t54-call-requires-name', last_payload().error == 'bad_action_name')
+
+-- ⑦ 状态变更会自动刷新广播（订阅者无需主动轮询）
+local before = broadcast().main.pos
+env.messages['nudge']('-5')
+local after = broadcast().main.pos
+check('t54-broadcast-refreshes-on-change', after == before - 5,
+    string.format('%s -> %s', tostring(before), tostring(after)))
+
+-- ⑧ 复位后既有消息仍全部注册（API 不覆盖原生入口）
+check('t54-native-messages-intact',
+    type(env.messages['open-menu']) == 'function'
+    and type(env.messages['letterbox-toggle']) == 'function'
+    and type(env.messages['size-step']) == 'function')
+
+r54()
+end
+run_t54()
+
+--------------------------------------------------------------------
+-- T55：上下黑边里「上下两条对话字幕」字号自适应（v1.0.10 新增判据）
+-- 与 T48~T51 的区别：T48 只验证 12/12 对称黑边的一档限缩；
+-- 这里横向比较不同厚度 / 上下不等高，证明倍率由**较薄黑边**决定、
+-- 两条对白用同一倍率且都不会溢出黑边，并把结果接进对外 API 快照。
+-- 帧 32×200、font_size=50 ⇒ unit = 50 × 1.2 × (200/720) = 16.667px
+--   usable = 200 × bar_frac × (1-pad=0.9)
+--------------------------------------------------------------------
+function run_t55()
+local UNIT55 = 50 * 1.2 * (200 / 720)
+local PAD55 = 0.10
+
+local function bf_case(top, bottom)
+    local r = bars_env(top, bottom, 128)
+    load_script()
+    env.events['file-loaded']()
+    flush_timers()
+    local out = {
+        scale = tonumber(env.props['sub-scale']) or -1,
+        sec_scale = tonumber(env.props['secondary-sub-scale']) or -2,
+        margin = tonumber(env.props['sub-margin-y']) or -1,
+        pos = env.props['sub-pos'],
+        sec_pos = env.props['secondary-sub-pos'],
+    }
+    -- 对外 API 快照里的黑边结果必须与真实属性一致（T54 ↔ T55 联动）
+    env.script_messages = {}
+    env.messages['api']('client', 'b1', 'get-state')
+    local raw
+    for _, c in ipairs(env.script_messages) do
+        if c[3] == 'uosc_subtitle_style-api-response' then raw = c[5] end
+    end
+    local ok, res = pcall(jdec, raw or '{}')
+    out.api = ok and res and res.data or nil
+    r()
+    return out
+end
+
+local function box_px(case, top, bottom)
+    local bar_frac = math.min(top, bottom) / 200
+    return case.scale * UNIT55, 200 * bar_frac
+end
+
+-- ① 对称 12/12：基线倍率（T48 已验 0.648，此处作为对照组）
+local c12 = bf_case(12, 12)
+check('t55-symmetric-12-baseline', math.abs(c12.scale - 0.648) < 0.02,
+    string.format('scale=%.4f', c12.scale))
+
+-- ② 更薄的 6/6：字号必须按黑边高度同比缩小
+local c6 = bf_case(6, 6)
+check('t55-thinner-bar-shrinks-font', c6.scale < c12.scale * 0.6,
+    string.format('6/6=%.4f vs 12/12=%.4f', c6.scale, c12.scale))
+check('t55-thinner-bar-scale-value', math.abs(c6.scale - 0.324) < 0.02,
+    string.format('scale=%.4f', c6.scale))
+
+-- ③ 上下不等高 18/6：取较薄一侧，倍率与 6/6 完全一致
+local casym = bf_case(18, 6)
+check('t55-asymmetric-uses-thinner-bar',
+    math.abs(casym.scale - c6.scale) < 0.001,
+    string.format('18/6=%.4f vs 6/6=%.4f', casym.scale, c6.scale))
+check('t55-asymmetric-both-tracks-same-scale',
+    math.abs(casym.sec_scale - casym.scale) < 0.001,
+    tostring(casym.sec_scale))
+
+-- ④ 宽黑边 30/30：够宽时不放大字幕，只居中
+local c30 = bf_case(30, 30)
+check('t55-wide-bar-does-not-enlarge', math.abs(c30.scale - 1) < 0.001,
+    string.format('scale=%.4f', c30.scale))
+
+-- ⑤ 每种情况：字幕盒高度不超过该侧黑边的可用高度（自适应不溢出）
+for _, spec in ipairs({{c12, 12, 12, '12/12'}, {c6, 6, 6, '6/6'},
+                       {casym, 18, 6, '18/6'}, {c30, 30, 30, '30/30'}}) do
+    local box, bar_px = box_px(spec[1], spec[2], spec[3])
+    check('t55-box-fits-bar-' .. spec[4],
+        box <= bar_px * (1 - PAD55) + 0.01 and box > 0,
+        string.format('box=%.2f bar=%.2f usable=%.2f',
+            box, bar_px, bar_px * (1 - PAD55)))
+end
+
+-- ⑥ 上下两条对白分别贴下/上黑边，且 margin 为整数（INT 属性硬约束）
+check('t55-both-dialogues-in-opposite-bars',
+    c6.pos == 100 and c6.sec_pos == 0,
+    string.format('main=%s sec=%s', tostring(c6.pos), tostring(c6.sec_pos)))
+check('t55-margin-is-integer', c6.margin == math.floor(c6.margin)
+    and casym.margin == math.floor(casym.margin),
+    string.format('6/6=%s 18/6=%s', tostring(c6.margin), tostring(casym.margin)))
+check('t55-margin-centers-box', c6.margin >= 0 and casym.margin >= 0)
+
+-- ⑦ API 快照把黑边结果对外输出，供其它脚本读取
+check('t55-api-exposes-barfit', c6.api ~= nil and c6.api.barfit_active == true
+    and type(c6.api.barfit) == 'table',
+    c6.api and tostring(c6.api.barfit_active) or 'no api data')
+check('t55-api-barfit-scale-matches-property', c6.api ~= nil
+    and c6.api.barfit ~= nil
+    and math.abs(c6.api.barfit.scale - c6.scale) < 0.001,
+    c6.api and c6.api.barfit and string.format('api=%.4f prop=%.4f',
+        c6.api.barfit.scale, c6.scale) or 'no api barfit')
+check('t55-api-barfit-top-bottom-fractions', c6.api ~= nil
+    and c6.api.barfit ~= nil
+    and math.abs(c6.api.barfit.top - 6 / 200) < 0.001
+    and math.abs(c6.api.barfit.bottom - 6 / 200) < 0.001)
+
+-- ⑧ 关贴合后还原基线 margin，用户手动放大不被自动缩放覆盖
+local r55 = bars_env(6, 6, 128)
+load_script()
+env.events['file-loaded']()
+flush_timers()
+env.messages['letterbox-toggle']()
+check('t55-toggle-off-restores-margin', env.props['sub-margin-y'] == 34,
+    tostring(env.props['sub-margin-y']))
+check('t55-toggle-off-restores-scale', env.props['sub-scale'] == 1,
+    tostring(env.props['sub-scale']))
+r55()
+end
+run_t55()
 
 for _, r in ipairs(restore50) do r() end
 restore51(); restore49(); restore48()
