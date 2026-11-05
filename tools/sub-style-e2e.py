@@ -28,10 +28,13 @@
 #   ⚠ 第三方插件（.gitmodules 里的 submodule）自身的 Lua 报错由 lua_errors()
 #     按日志标签隔离，被测脚本与探针的任何报错仍然算 FAIL。
 # 用法（在 portable_config/ 下）：python tools/sub-style-e2e.py
+# 独立公开仓库（仓库根没有 mpv.exe）复用本编排时：
+#   MPV_EXE=/path/to/mpv.exe python tools/sub-style-e2e.py
+#   会自动加 --config-dir=<仓库根>，把仓库当作 portable_config 且不读用户全局配置。
 # ⚠ 视觉判据依赖 Pillow：PATH 里的 managed python 未装 Pillow，本机请用
 #   系统 Python（C:\Python314\python.exe，已装 Pillow 12.x）运行；缺 PIL 时
 #   本脚本会以 exit 2 明确退出，而不是崩在 traceback 里。
-import os, re, subprocess, sys, tempfile
+import atexit, os, re, shutil, subprocess, sys, tempfile
 
 try:
     import PIL  # noqa: F401
@@ -44,6 +47,51 @@ except ImportError:
 PORTABLE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # portable_config/
 MPV_DIR = os.path.dirname(PORTABLE)                                       # mpv 根目录（含 mpv.exe）
 MPV = os.path.join(MPV_DIR, 'mpv.exe')
+# 独立公开仓库（awujiana/uosc_subtitle_style）也共用这份编排：仓库根就是配置根，
+# 播放器不在上一级目录。此时由 MPV_EXE 指定 mpv.exe，并显式 --config-dir 隔离
+# 用户全局配置；生产环境命中 mpv.exe 时 CONFIG_ARGS 为空，行为与旧版完全一致。
+CONFIG_ARGS = []
+STANDALONE = not os.path.exists(MPV)
+if STANDALONE:
+    MPV = os.environ.get('MPV_EXE') or shutil.which('mpv') or MPV
+    MPV_DIR = os.path.dirname(os.path.abspath(MPV))
+    CONFIG_ARGS = ['--config-dir=' + PORTABLE, '--idle=no']
+    if not os.path.exists(MPV):
+        print('FATAL: 未找到 mpv.exe；请设置 MPV_EXE 或把 mpv 放进 PATH')
+        sys.exit(2)
+    print('standalone layout: config-dir=%s mpv=%s' % (PORTABLE, MPV))
+
+
+def run_mpv(args, **kwargs):
+    """在真正启动 mpv 前注入 CONFIG_ARGS，统一 cwd 为 mpv.exe 所在目录。"""
+    return subprocess.run([args[0]] + CONFIG_ARGS + args[1:],
+                          cwd=MPV_DIR, **kwargs)
+
+
+def remove_tree(path):
+    """逐文件清理临时复制的 uosc。
+
+    不用 shutil.rmtree：部分托管 Python 环境会拦截批量删除（atexit 里抛
+    SystemExit 污染 E2E 日志末尾，虽然汇总行仍为 PASS）。这里只删本脚本
+    自己复制进去的目录，且任何一项失败都忽略，不影响门禁结论。
+    """
+    for root, dirs, files in os.walk(path, topdown=False):
+        for name in files:
+            try:
+                os.unlink(os.path.join(root, name))
+            except OSError:
+                pass
+        for name in dirs:
+            try:
+                os.rmdir(os.path.join(root, name))
+            except OSError:
+                pass
+    try:
+        os.rmdir(path)
+    except OSError:
+        pass
+
+
 PROBE = os.path.join(PORTABLE, 'tools', 'sub-style-probe.lua')
 FIXTURE_MAIN = os.path.join(PORTABLE, 'tools', 'sub-style-smoke.ass')
 FIXTURE_SEC = os.path.join(PORTABLE, 'tools', 'sub-style-smoke-sec.ass')
@@ -102,11 +150,31 @@ def main():
     # SKIP（探针会打印原因），避免「悄悄少测三项」。必须在 mpv 启动前设置。
     uosc_main = os.path.join(PORTABLE, 'scripts', 'uosc', 'main.lua')
     uosc_present = os.path.exists(uosc_main)
+    if not uosc_present and STANDALONE:
+        # 独立仓库不内置 uosc（第三方 LGPL 项目）：从 UOSC_MAIN 或 mpv 目录的
+        # portable_config 复制一份，让字体选择器断言照常参与实测而非悄悄 SKIP。
+        source = os.environ.get('UOSC_MAIN') or os.path.join(
+            MPV_DIR, 'portable_config', 'scripts', 'uosc', 'main.lua')
+        if os.path.exists(source):
+            uosc_dir = os.path.dirname(uosc_main)
+            shutil.copytree(os.path.dirname(source), uosc_dir, dirs_exist_ok=True)
+            atexit.register(remove_tree, uosc_dir)
+            uosc_present = os.path.exists(uosc_main)
+            print('uosc: %s → %s（临时复制，退出即清理）' % (source, uosc_dir))
     if uosc_present:
         env['SUBSTYLE_UOSC'] = '1'
         print('uosc: %s（字体选择器断言强制）' % uosc_main)
     else:
         print('uosc: 未找到 %s —— 字体选择器三项将 SKIP' % uosc_main)
+
+    # uosc_staff_credits 是配置整合包里的另一份脚本；独立仓库没有它时，
+    # 令 API 探针跳过职员表那 7 条断言（不伪造 PASS，直接不参与期望表）。
+    staff_present = os.path.exists(os.path.join(
+        PORTABLE, 'scripts', 'uosc_staff_credits', 'main.lua'))
+    env['SUBSTYLE_STAFF_API'] = '1' if staff_present else '0'
+    print('staff_credits: %s（API 探针职员表断言%s）'
+          % ('present' if staff_present else 'absent',
+             '启用' if staff_present else '跳过'))
     cmd = [
         MPV,
         '--script=' + PROBE,
@@ -127,7 +195,7 @@ def main():
         'av://lavfi:color=c=gray:s=640x360:d=60:rate=25',
     ]
     print('RUN:', ' '.join(cmd))
-    proc = subprocess.run(cmd, cwd=MPV_DIR, env=env, stdout=open(log, 'w'),
+    proc = run_mpv(cmd, env=env, stdout=open(log, 'w'),
                           stderr=subprocess.STDOUT, timeout=240)
     print('mpv exit=%d' % proc.returncode)
 
@@ -279,7 +347,7 @@ def main():
         'av://lavfi:color=c=gray:s=640x360:d=24:rate=25',
     ]
     print('RUN(stream):', ' '.join(stream_cmd))
-    sproc = subprocess.run(stream_cmd, cwd=MPV_DIR, env=env, stdout=open(stream_log, 'w'),
+    sproc = run_mpv(stream_cmd, env=env, stdout=open(stream_log, 'w'),
                            stderr=subprocess.STDOUT, timeout=180)
     print('mpv(stream) exit=%d' % sproc.returncode)
     stext = open(stream_log, encoding='utf-8', errors='replace').read()
@@ -345,7 +413,7 @@ def main():
         penv['SUBSTYLE_PRESET_OUTLINE'] = outline
         penv['SUBSTYLE_PRESET_TAG'] = tag
         print('RUN(%s):' % tag, ' '.join(pcmd))
-        pproc = subprocess.run(pcmd, cwd=MPV_DIR, env=penv,
+        pproc = run_mpv(pcmd, env=penv,
                                stdout=open(plog, 'w'), stderr=subprocess.STDOUT,
                                timeout=120)
         print('mpv(%s) exit=%d' % (tag, pproc.returncode))
@@ -531,7 +599,7 @@ def main():
         'av://lavfi:color=c=black:s=640x360:d=14:rate=25',
     ]
     print('RUN(pos):', ' '.join(pos_cmd))
-    posproc = subprocess.run(pos_cmd, cwd=MPV_DIR, env=env,
+    posproc = run_mpv(pos_cmd, env=env,
                             stdout=open(pos_log, 'w'), stderr=subprocess.STDOUT,
                             timeout=120)
     print('mpv(pos) exit=%d' % posproc.returncode)
@@ -578,7 +646,7 @@ def main():
         bars_png,
     ]
     print('RUN(bars):', ' '.join(bars_cmd))
-    barsproc = subprocess.run(bars_cmd, cwd=MPV_DIR, env=env,
+    barsproc = run_mpv(bars_cmd, env=env,
                               stdout=open(bars_log, 'w'), stderr=subprocess.STDOUT,
                               timeout=120)
     print('mpv(bars) exit=%d' % barsproc.returncode)
@@ -654,7 +722,7 @@ def main():
         fenv['SUBSTYLE_FS_MODE'] = mode
         fenv['SUBSTYLE_FS_BASE_N'] = str(int(base_n))
         print('RUN(fs-%s):' % tag, ' '.join(fcmd))
-        fproc = subprocess.run(fcmd, cwd=MPV_DIR, env=fenv,
+        fproc = run_mpv(fcmd, env=fenv,
                                stdout=open(flog, 'w'), stderr=subprocess.STDOUT,
                                timeout=180)
         print('mpv(fs-%s) exit=%d' % (tag, fproc.returncode))
@@ -763,12 +831,12 @@ def main():
         '--msg-level=all=info', fs_plain,
     ]
     print('RUN(api):', ' '.join(api_cmd))
-    aproc = subprocess.run(api_cmd, cwd=MPV_DIR, env=env,
+    aproc = run_mpv(api_cmd, env=env,
                            stdout=open(api_log, 'w'), stderr=subprocess.STDOUT,
                            timeout=180)
     print('mpv(api) exit=%d' % aproc.returncode)
     atext = open(api_log, encoding='utf-8', errors='replace').read()
-    api_expected = (
+    api_expected = [
         'api-userdata-version', 'api-userdata-version-is-native-string',
         'api-userdata-state-json', 'api-userdata-state-fields',
         'api-get-state-reply', 'api-get-state-request-id',
@@ -776,12 +844,16 @@ def main():
         'api-call-dispatch', 'api-call-changes-state-broadcast',
         'api-property-pos-matches-broadcast', 'api-subscribe-native-observer',
         'api-call-rejects-recursive',
-        # uosc_staff_credits 子仓库的对外 API（同一 mpv 实例顺带验证）
-        'staff-api-userdata-version', 'staff-api-userdata-state-json',
-        'staff-api-state-fields', 'staff-api-no-token-leak',
-        'staff-api-get-state-reply', 'staff-api-get-state-request-id',
-        'staff-api-list-actions',
-    )
+    ]
+    # uosc_staff_credits 子仓库的对外 API：仅当配置里真的装了它才验，
+    # 独立公开仓库不带这份脚本，跳过相应 7 条而不是伪造 PASS。
+    if staff_present:
+        api_expected += [
+            'staff-api-userdata-version', 'staff-api-userdata-state-json',
+            'staff-api-state-fields', 'staff-api-no-token-leak',
+            'staff-api-get-state-reply', 'staff-api-get-state-request-id',
+            'staff-api-list-actions',
+        ]
     ars = probe_of(atext)
     for name in api_expected:
         if name not in ars:

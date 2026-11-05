@@ -1,7 +1,8 @@
 -- 语法检查工具：用 mpv 自带的 luajit 校验本目录下所有 .lua 文件
 --
--- 用法（在本文件所在目录执行，即 portable_config/）：
---   ../luajit.exe tools/lua-syntax-check.lua
+-- 用法（在仓库根执行，即 portable_config/ 或独立脚本仓库根）：
+--   luajit tools/lua-syntax-check.lua
+--   路径一律按相对路径读取，因此仓库位于中文目录时也能正常工作。
 --
 -- 说明：
 --   本项目目录里没有独立安装 Lua，直接复用 mpv 自带的 luajit.exe
@@ -33,14 +34,38 @@ local function is_excluded(path)
     return false
 end
 
+-- cmd 的 `dir /b /s` 返回绝对路径。若仓库放在中文 / 非 ASCII 目录下，
+-- Lua 5.1 的 io.open 在 Windows 上无法按控制台编码打开这段绝对路径
+-- （独立公开仓库 D:\编程\uosc_subtitle_style 实测报「无法读取文件」）。
+-- 解决办法：从 `cd` 取同编码的当前目录前缀并剥掉，之后一律用相对路径读取。
+local CWD = ''
+do
+    local p = io.popen('cd')
+    if p then
+        CWD = (p:read('*l') or ''):match('^%s*(.-)%s*$')
+        p:close()
+    end
+end
+
+local function to_relative(path)
+    local prefix = CWD .. '\\'
+    if CWD ~= '' and path:sub(1, #prefix):lower() == prefix:lower() then
+        return path:sub(#prefix + 1)
+    end
+    return path
+end
+
 -- 递归收集 .lua 文件
 local function collect(dir, out)
     local p = io.popen('dir /b /s "' .. dir .. '\\*.lua" 2>nul')
     if not p then return end
     for line in p:lines() do
         local path = line:match("^%s*(.-)%s*$")
-        if path and path ~= "" and not is_excluded(path) then
-            out[#out + 1] = path
+        if path and path ~= "" then
+            path = to_relative(path)
+            if not is_excluded(path) then
+                out[#out + 1] = path
+            end
         end
     end
     p:close()

@@ -8,9 +8,13 @@
 
 ## [未发布]
 
-### 新增
+### 改进
 
-- 暂无已合并未发布的改动。
+- `tools/sub-style-e2e.py` 适配**独立公开仓库**布局：`MPV_EXE` + `--config-dir` 隔离用户全局配置、临时复制 uosc、无 `uosc_staff_credits` 时把 7 条职员表 API 断言从期望表移除（不伪造 PASS）。
+- `tools/sub-style-probe-api.lua` 新增 `SUBSTYLE_STAFF_API` 开关，让 API 探针可在只装了字幕脚本的环境运行。
+- `tools/lua-syntax-check.lua` 改为按相对路径读取 Lua 文件，仓库位于中文目录（如 `D:\编程\...`）时不再报「无法读取文件」；生产端仍检查全部 196 个文件。
+- `docs/uosc-subtitle-style-architecture.md` §19 的姊妹 API 链接改为公开绝对 URL，同步到独立脚本仓库后不会断链。
+- 同步独立公开仓库 [awujiana/uosc_subtitle_style](https://github.com/awujiana/uosc_subtitle_style) 到 **v1.0.10**（脚本 / conf / 文档 / 全套测试工具 / `version.json` / README），并发 `v1.0.10` Release，消除「仓库最新 Release 仍是 v1.0.5」的版本落差。
 
 ## [1.0.0] - 2026-11-05
 

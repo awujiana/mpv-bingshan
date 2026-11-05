@@ -937,7 +937,7 @@ BARS   00-fit                 n=1265 h=17 ov=Fontsize=18  ← 自动缩小
 
 > 完整调用契约（字段表、错误码、示例、版本兼容承诺）见同目录的
 > [`api-uosc-subtitle-style.md`](api-uosc-subtitle-style.md)。
-> 姊妹实现：[`scripts/uosc_staff_credits/docs/EXTERNAL_API.md`](../scripts/uosc_staff_credits/docs/EXTERNAL_API.md)。
+> 姊妹实现：[`uosc-staff-credits/docs/EXTERNAL_API.md`](https://github.com/awujiana/uosc-staff-credits/blob/main/docs/EXTERNAL_API.md)（独立公开仓库，故用绝对链接，本脚本仓库同步后不会断链）。
 
 ### 19.1 为什么要做对外 API
 
