@@ -23,8 +23,15 @@
 #       画面中部（视频内容区）差分像素必须归零。
 #   5e. v1.0.9 内封定位 ASS：用 sub-style-mkv-fixture.py 生成带内封 ASS
 #       轨的最小 MKV（MJPEG 单帧 + \pos 事件），跑 plain / bars 两轮真机，
-#       验证缩放与字号真的改变 \pos 字幕画面、sub-scale 不双叠加、\pos 不随
-#       nudge 位移、关通道可复现原报障、黑边自动缩小并把放大值存进预设。
+#       验证缩放与字号真的改变 \pos 字幕画面、sub-scale 不双叠加、1% 微调
+#       通过 PlayResY 同步位移 \pos 字幕、关通道可复现原报障、黑边自动缩小
+#       并把放大值存进预设。
+#   5g. v1.0.11 对话轨道也是 \pos：上下 24px 黑条 + 两条 explicit 定位对白，
+#       验证黑边贴合把底部对白整条推进黑边、点下移真的有效、关位移通道
+#       后复现「点下移没反应」，且开关可逆。
+#   5h. v1.0.11 show_report：同一夹具起 yes / no 两轮互为对照组，验证 conf
+#       能完全关掉左上角 OSD、运行时 report-toggle 双向生效，而检测链与
+#       黑边贴合照常执行。
 #   ⚠ 第三方插件（.gitmodules 里的 submodule）自身的 Lua 报错由 lua_errors()
 #     按日志标签隔离，被测脚本与探针的任何报错仍然算 FAIL。
 # 用法（在 portable_config/ 下）：python tools/sub-style-e2e.py
@@ -83,6 +90,7 @@ FIXTURE_BARS_SEC = os.path.join(PORTABLE, 'tools', 'sub-style-smoke-bars-sec.srt
 MKV_FIXTURE = os.path.join(PORTABLE, 'tools', 'sub-style-mkv-fixture.py')
 PROBE_FONTSIZE = os.path.join(PORTABLE, 'tools', 'sub-style-probe-fontsize.lua')
 PROBE_API = os.path.join(PORTABLE, 'tools', 'sub-style-probe-api.lua')
+PROBE_SHIFT = os.path.join(PORTABLE, 'tools', 'sub-style-probe-shift.lua')
 STATE_FILE = os.path.join(PORTABLE, 'uosc-subtitle-style-state.json')
 PRESET_FILE = os.path.join(PORTABLE, 'uosc-subtitle-style-preset.json')
 FONT_CACHE = os.path.join(PORTABLE, 'uosc-subtitle-style-fonts.json')
@@ -734,7 +742,10 @@ def main():
         'fs-scale-reset-restores',
         'fs-size-step-writes-fontsize', 'fs-size-step-enlarges',
         'fs-size-step-reversible',
-        'fs-nudge-keeps-pos-subtitle', 'fs-nudge-boundary-clamps',
+        'fs-nudge-moves-pos-subtitle', 'fs-nudge-writes-playres',
+        'fs-nudge-compensates-fontsize', 'fs-nudge-boundary-clamps',
+        'fs-nudge-1-pos-step', 'fs-nudge-1-playres-ratio',
+        'fs-pos-reset-clears-playres', 'fs-pos-reset-restores-visual',
         'fs-toggle-off-clears-fontsize',
         'fs-channel-off-uses-native-sub-scale',
         'fs-channel-off-scale-ignored-by-pos', 'fs-toggle-on-restores',
@@ -747,8 +758,8 @@ def main():
     n_s150 = fs_n(ptext, '01-scale150')
     n_back = fs_n(ptext, '02-scale100')
     n_plus = fs_n(ptext, '03-sizeplus8')
-    n_off = fs_n(ptext, '07-off-scale-no-visual')
-    n_on = fs_n(ptext, '09-toggle-on-restores')
+    n_off = fs_n(ptext, '09-off-scale-no-visual')
+    n_on = fs_n(ptext, '11-toggle-on-restores')
     check('fs-plain-visual-rows-present',
           all(v is not None for v in (n_base, n_s150, n_back, n_plus, n_off, n_on)),
           'base=%s scale150=%s back=%s plus=%s off=%s on=%s'
@@ -846,6 +857,105 @@ def main():
     aerrs, aignored = lua_errors(atext)
     check('api-no-lua-errors', len(aerrs) == 0,
           '; '.join(aerrs[:2]) + (' | 已忽略第三方插件报错 %d 行' % aignored if aignored else ''))
+
+    # ---- 5g/5h. v1.0.11：\pos 对白进黑边 + show_report 开关 ----
+    # 用户截图里底部「对话轨道」本身也是 \pos explicit ASS（普通对白 sub-pos
+    # 是有效的，只有点下移没反应才说明是 explicit），因此两条事件都带 \pos。
+    sh_mkv = os.path.join(workdir, 'internal-posdialog.mkv')
+    mkvmod.build(sh_mkv, bars=24, events=(
+        '{\\pos(320,60)}TOPDIALOG',
+        '{\\pos(320,338)}BOTTOMDIALOG',
+    ))
+    check('sh-fixture-built', os.path.getsize(sh_mkv) > 1024,
+          '%d bytes' % os.path.getsize(sh_mkv))
+
+    def run_shift(tag, mode, expect, show_report=None):
+        # 状态文件里残留的 pos=105/150 会让 ass_y_ratio() 误判成用户位移，
+        # 造成「关贴合不清残留」的假失败；每轮必须从干净状态起。
+        for p in (STATE_FILE, PRESET_FILE):
+            if os.path.exists(p):
+                os.remove(p)
+        slog = os.path.join(workdir, 'shift-' + tag + '-log.txt')
+        scmd = [
+            MPV, '--script=' + PROBE_SHIFT,
+            '--vo=gpu', '--ao=null', '--pause=yes',
+            '--image-display-duration=inf',
+            '--watch-later-dir=' + watch_dir,
+            '--save-position-on-quit=no', '--no-resume-playback',
+            '--msg-level=all=info',
+        ]
+        if show_report:
+            scmd.append('--script-opts=uosc_subtitle_style-show_report='
+                        + show_report)
+        scmd.append(sh_mkv)
+        senv = dict(env)
+        senv['SUBSTYLE_SHIFT_MODE'] = mode
+        senv['SUBSTYLE_SHIFT_EXPECT'] = expect
+        print('RUN(shift-%s):' % tag, ' '.join(scmd))
+        sproc = run_mpv(scmd, env=senv,
+                        stdout=open(slog, 'w'), stderr=subprocess.STDOUT,
+                        timeout=240)
+        print('mpv(shift-%s) exit=%d' % (tag, sproc.returncode))
+        return open(slog, encoding='utf-8', errors='replace').read()
+
+    def shift_asserts(prefix, text, expected):
+        rs = probe_of(text)
+        for name in expected:
+            if name not in rs:
+                check(prefix + name, False, 'missing in log')
+            else:
+                check(prefix + name, rs[name][0] == 'PASS', rs[name][1][:150])
+        sm = re.search(r'PROBE SUMMARY pass=(\d+) fail=(\d+)', text)
+        check(prefix + 'summary-all-ok', bool(sm) and sm.group(2) == '0',
+              sm.group(0) if sm else 'not found')
+        es, ig = lua_errors(text)
+        check(prefix + 'no-lua-errors', len(es) == 0,
+              '; '.join(es[:2]) + (' | 已忽略第三方插件报错 %d 行' % ig if ig else ''))
+
+    shift_bars_expected = (
+        'sh-barfit-writes-playres', 'sh-barfit-shrinks-fontsize',
+        'sh-dialogue-fully-inside-bottom-bar', 'sh-top-sign-still-rendered',
+        'sh-fit-off-clears-playres', 'sh-fit-off-clears-fontsize',
+        'sh-fit-off-dialogue-leaves-bar',
+        'sh-pos150-writes-playres', 'sh-pos150-moves-positioned-subtitle',
+        'sh-pos150-compensates-fontsize',
+        'sh-channel-off-no-playres', 'sh-channel-off-keeps-pos-subtitle',
+        'sh-channel-off-sub-pos-changed',
+        'sh-refresh-restores-playres', 'sh-refresh-dialogue-back-in-bar',
+    )
+    sh_bars = run_shift('bars', 'bars', 'no')
+    shift_asserts('sh-bars-', sh_bars, shift_bars_expected)
+    # Python 侧独立复核：解析探针 SH 行的 BOT 波段像素范围，不依赖它自己的 PASS
+    def sh_bot_y0(text, tag):
+        m = re.search(r'SH %s\s+.*?BOT\[n=\d+ y=(-?\d+)\.\.(-?\d+)\]'
+                      % re.escape(tag), text)
+        return int(m.group(1)) if m else None
+    y_fit = sh_bot_y0(sh_bars, '00-fit')
+    y_off = sh_bot_y0(sh_bars, '01-fit-off')
+    check('sh-bars-visual-rows-present', y_fit is not None and y_off is not None,
+          'fit_y0=%s off_y0=%s' % (y_fit, y_off))
+    if y_fit is not None and y_off is not None:
+        # 360 - 24 = 336，对白整条必须越过黑边上沿
+        check('sh-bars-visual-dialogue-crosses-bar-top',
+              y_fit >= 336 and y_off < 336,
+              'fit_y0=%d off_y0=%d bar_top=336' % (y_fit, y_off))
+
+    report_common = (
+        'sh-report-counter-readable', 'sh-report-no-osd-align-change',
+        'sh-report-detection-still-runs', 'sh-report-dialogue-still-in-bar',
+        'sh-report-off-keeps-osd-align',
+        'sh-report-toggle-flips-runtime-state',
+        'sh-report-toggle-takes-effect',
+        'sh-report-toggle-restores-conf-value',
+        'sh-report-restore-takes-effect',
+    )
+    for expect, opt in (('no', 'no'), ('yes', 'yes')):
+        text = run_shift('report-' + expect, 'report', expect, opt)
+        names = report_common + (
+            ('sh-report-config-read-as-off', 'sh-report-off-no-osd-output')
+            if expect == 'no' else
+            ('sh-report-config-read-as-on', 'sh-report-on-actually-shows'))
+        shift_asserts('sh-report-%s-' % expect, text, names)
 
     # ---- 6. 清理测试产物 ----
     for p in (STATE_FILE, PRESET_FILE, FONT_CACHE):

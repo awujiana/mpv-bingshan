@@ -163,7 +163,7 @@ uosc 的控制栏 `controls=` 定义在 `script-opts/uosc.conf`（不是本脚�
 <a id="sec-7"></a>
 ## 🖋 内封字幕样式切换
 
-`scripts/uosc_subtitle_style.lua`（**v1.0.10**）：把字幕在 **原位 / 中下 / 中部 / 中上 / 顶部** 之间切换，可整体缩放、改字体、字号、粗体、描边粗细与描边颜色；**主字幕（sid）与次字幕（secondary-sid）分轨独立调整**，两轨位置自动避让、**永不重叠**。载入时自动检测字幕样式并在左上角输出报告，可对**彩色字幕与灰色字幕**自动套用可修改、可缓存的预设样式；**双语字幕（双轨）默认不改颜色**。界面直接用 uosc 菜单。
+`scripts/uosc_subtitle_style.lua`（**v1.0.11**）：把字幕在 **原位 / 中下 / 中部 / 中上 / 顶部** 之间切换，可整体缩放、改字体、字号、粗体、描边粗细与描边颜色；**主字幕（sid）与次字幕（secondary-sid）分轨独立调整**，两轨位置自动避让、**永不重叠**。载入时自动检测字幕样式并在左上角输出报告（可用 conf `show_report=no` 关闭显示，功能照常），可对**彩色字幕与灰色字幕**自动套用可修改、可缓存的预设样式；**双语字幕（双轨）默认不改颜色**。界面直接用 uosc 菜单。
 
 ### 版本要点
 
@@ -172,12 +172,13 @@ uosc 的控制栏 `controls=` 定义在 `script-opts/uosc.conf`（不是本脚�
 - **v1.0.8**：**所有的内封字幕都要被检查**。旧检测只看当前选中的一条轨，真机示例 MKV 有 **42 条内封字幕轨**，切换过去时其余 41 条从未被检查。现在报告列出「内封字幕轨：共 N 条，已检查 M 条」，切换 `sid`/`secondary-sid` 到未检查过的内封轨会自动重新检测；内封字幕除「标准白字黑边」外一律套用黑白预设，不再只靠「是否彩色 / 是否灰阶」这种窄颜色判据（灰色 `#8B8B8B` 报障的彻底解决）。conf 的 `inspect_all_internal` / `preset_all_internal` 可分别关闭。
 - **v1.0.9**：修好「点下移 / 整体缩放都没反应，只有换字体有效」。真机查证带 `\pos` 的**内封** ASS 对 `sub-pos` / `sub-scale` / `sub-font-size` **全部豁免**，只有改写 ASS 样式表才有效。现在这类字幕的**缩放与字号折成 `sub-ass-style-overrides/Fontsize`**（基准字号优先从 `sub-ass-extradata` 的 `Style:` / `PlayResY` 读取），并把两轨 `sub-scale` 归 1 防止双叠加；`ScaleX/ScaleY` 实测在 125%/150% 会让字幕消失，故不用作倍率通道。
   - **新增字号 ±1px 连续微调**（菜单「字号 −1px / +1px」，`size-step ±1`），解决「整体缩放不能精准放大字号」；到 `size_min/size_max` 边界给明确提示。
-  - **上下黑边视频**：限缩倍率同样并入 `Fontsize`，内封 `\pos` 字幕自动缩小到匹配黑边的单行大小（位置仍保持原位）；嫌小点「字号 +1px」，黑边贴合时**自动存进全局预设缓存**（`size_step_saves_preset`）。
-  - **位置微调到边界不再静默失效**：`nudge` 到 `0%`/`150%` 明确提示；带 `\pos` 的定位字幕保持原位并提示改用字号 / 缩放。
+  - **上下黑边视频**：限缩倍率同样并入 `Fontsize`，内封 `\pos` 字幕自动缩小到匹配黑边的单行大小；嫌小点「字号 +1px」，黑边贴合时**自动存进全局预设缓存**（`size_step_saves_preset`）。（v1.0.10 时位置仍保持原位，v1.0.11 起由 `PlayResY` 通道一并送进黑边。）
+  - **位置微调到边界不再静默失效**：`nudge` 到 `0%`/`150%` 明确提示；（v1.0.11 起带 `\pos` 的定位字幕改为同步位移，不再保持原位。）
   - 「其它 → 内封定位字幕可缩放/改字号」(`ass-fontsize-toggle`) 可一键退回原生通道；关闭时真机能复现原报障。
 - **v1.0.10**：① **上下黑边双对话字幕字号自适应判据**——横向比较 `12/12`、`6/6`、`18/6`、`30/30` 四种黑边，证明限缩倍率由**较薄一侧**决定、上下两条对白用**同一倍率**且字幕盒都不溢出黑边，宽黑边只居中不放大；结果同步进对外 API 快照。② **对外输出 API**（`1.0.0`）：`user-data` 状态广播 + 请求-响应 + 白名单动作转发。
+- **v1.0.11**：① 修复「**内封字幕点下移没反应，只有外挂有反应**」与「**对话轨道字幕没在黑边内输出**」——真机逐通道实测确认 `\pos` explicit ASS 对 `sub-pos` / `sub-scale` / `sub-margin-y` 全豁免，唯一能改 Y 的是覆盖 ASS `[Script Info]` 的 `PlayResY`；据此把「上移/下移」与「上下黑边贴合」折成 `ratio` 写进 `PlayResY`，并用 `Fontsize` 反向补偿保持物理字号。对话轨道本身是 `\pos` 对白时也能整条推进下黑边。② 菜单步长 **上移/下移 5% → 1%**，便于一点点推进黑边；新增「其它 → 内封定位字幕可下移」(`ass-pos-shift-toggle`)，可关回「保持原位」。③ **左上角报告可关闭**：conf `show_report=no` 永久关闭显示（检测 / 黑白预设 / 全内封轨检查 / 黑边贴合照常执行），菜单「显示左上角检测报告」与 `report-toggle` 可运行时切换。④ 对外 API 快照新增 `ass_pos_shift_active` / `ass_y_ratio` / `barfit.y_ratio` / `barfit.anchor_target` / `runtime.{ass_pos_shift,show_report,report_shown}`，白名单新增 `ass-pos-shift-toggle` / `report-toggle`。架构文档新增 [§20](docs/uosc-subtitle-style-architecture.md) 说明位移公式与黑边反解。
 
-> 若 mpv 仍显示旧的「非彩色字幕，保持原样」文案，说明内存里跑的还是被自更新器降级过的 v1.0.5 —— **完全退出并重启播放器**即可加载 v1.0.10。
+> 若 mpv 仍显示旧的「非彩色字幕，保持原样」文案，说明内存里跑的还是被自更新器降级过的 v1.0.5 —— **完全退出并重启播放器**即可加载 v1.0.11。
 
 ### 对外 API
 
@@ -256,7 +257,7 @@ script-message-to uosc_subtitle_style api <reply_to> <request_id> call nudge -5
 - **检测**：`file-loaded` 后用 `screenshot-raw('video')` 逐行采样平均亮度，从上 / 下各扫 45% 找连续暗行；中央区域亮度守卫防止暗场误判。
 - **布局**：按 `sub-font-size × 1.2 × frame_h/720` 估算字幕盒，限缩 `sub-scale` 让它塞进黑条，再用共享 `sub-margin-y` 居中；主轨 `sub-pos=100`（下黑边）、次轨 `secondary-sub-pos=0`（上黑边），两轨同倍率。优先级高于中日双语自动布局。
 - **让位与还原**：菜单改位置 / 缩放、外部 `R`/`T` 键改位置、`reset`、`end-file` 都会立即退出本次贴合并还原 `sub-margin-y`。`sub-margin-y` 是 **INT 属性**（传小数会被静默忽略）且不在 `reset-on-next-file` 列表里，必须显式还原；改完还要发一次 `show-text ' ' 60` 触发 `configure_ass`。
-- **硬边界**：带 `\pos` 的 explicit ASS 事件对 `sub-pos` / `sub-scale` / `sub-margin-y` 全部豁免，**保持原位**；强行 `strip` 会丢定位标签，脚本不重写事件。v1.0.9 起限缩倍率一并写入 ASS `Fontsize`，这类字幕**尺寸跟着缩小、位置不动**。
+- **硬边界（v1.0.11 更新）**：带 `\pos` 的 explicit ASS 事件对 `sub-pos` / `sub-scale` / `sub-margin-y` 全部豁免；强行 `strip` 会丢定位标签并使 style-overrides 整体失效，脚本不重写事件。v1.0.9 起限缩倍率写进 ASS `Fontsize`（尺寸跟着缩小）；**v1.0.11 起改由覆盖 `[Script Info]` 的 `PlayResY` 做整体比例位移**，`\pos` 对白可整条送进下黑边、点下移 1% 即时生效，`Fontsize` 同比反向补偿保持物理字号。该通道解码器级共享、以画面顶部为原点，次轨 `\pos` 无法同时进上黑边；`ass-pos-shift-toggle` 可关回「保持原位」。
 - 真机 E2E：贴合前画面区字幕差分 `mid=653`，贴合后 `mid=0`，上 / 下黑边分别 `230` / `319`，画面主体完全不遮挡。
 
 <a id="sec-8"></a>
@@ -298,9 +299,9 @@ python tools/sub-style-conf-verify.py                  # conf 静态门禁
 /c/Python314/python.exe tools/updater-mutation-test.py # 10 个变异，须 ALL_KILLED
 ```
 
-- **单测**覆盖字体解析器合成 sfnt/TTC、位置避让、稳态编辑不重建、ASS 解析 / 像素采样、灰阶识别与 `\pos` 样式表覆盖、预设读写、双语跳过、菜单项；T48–T51 上下黑边、T52 全内封轨、T53 `Fontsize` 通道与 ±1px 微调、T54 对外 API、T55 双对话字幕黑边自适应。
+- **单测**覆盖字体解析器合成 sfnt/TTC、位置避让、稳态编辑不重建、ASS 解析 / 像素采样、灰阶识别与 `\pos` 样式表覆盖、预设读写、双语跳过、菜单项；T48–T51 上下黑边、T52 全内封轨、T53 `Fontsize` 通道与 ±1px 微调、T54 对外 API、T55 双对话字幕黑边自适应、**T56 v1.0.11 位移 / T57 报告开关**（共 373 条）。
 - **conf 门禁**按 mpv 解析语义复算键集合与脚本 `o` 表对齐、布尔 / 数值 / 颜色格式、行尾注释检测。
-- **真机 E2E** 共 8 组：① 双轨探针 + 视觉波段 ② 字幕流连续性 ③ 预设五用例 ④ v1.0.6 灰色 / `\pos` 报障回归 ⑤ v1.0.7 黑边贴合 ⑥ v1.0.8 42 轨示例视频复现 ⑦ v1.0.9 内封 `\pos` ASS 缩放 / 字号（`sub-style-mkv-fixture.py` **纯 Python 直接写最小 Matroska**，不依赖 ffmpeg） ⑧ v1.0.10 双脚本 API。
+- **真机 E2E** 共 10 组：① 双轨探针 + 视觉波段 ② 字幕流连续性 ③ 预设五用例 ④ v1.0.6 灰色 / `\pos` 报障回归 ⑤ v1.0.7 黑边贴合 ⑥ v1.0.8 42 轨示例视频复现 ⑦ v1.0.9 内封 `\pos` ASS 缩放 / 字号（`sub-style-mkv-fixture.py` **纯 Python 直接写最小 Matroska**，不依赖 ffmpeg） ⑧ v1.0.10 双脚本 API ⑨ **5g v1.0.11 `\pos` 对白进黑边 / 1% 下移** ⑩ **5h `show_report=yes|no` 两轮对照**。
 - E2E 会按日志标签隔离 `uosc_danmaku` / `uosc_staff_credits` / `dynamic_crop` 等第三方插件的无关 Lua error；被测脚本与探针自身的报错仍判 FAIL。
 - ⚠ E2E 视觉判据依赖 Pillow：请用系统 Python（`C:\Python314\python.exe`）运行；缺 PIL 时脚本会明确退出而非崩溃。
 

@@ -17,6 +17,8 @@
 --
 -- 这组断言同时复现用户报障的「点缩放没反应」：通道关闭时 sub-scale 确实变成
 -- 1.5，但 \pos 字幕像素纹丝不动；通道开启后 Fontsize 写入才让画面变大。
+-- v1.0.11：另加「点下移没反应」的反向验证 —— 位移通道开启时 pos/nudge 必须
+-- 真的把 \pos 字幕往下推（PlayResY 覆盖），关掉时回到「保持原位」。
 
 local MODE = os.getenv('SUBSTYLE_FS_MODE') or 'plain'
 local BASE_N = tonumber(os.getenv('SUBSTYLE_FS_BASE_N') or '0') or 0
@@ -43,6 +45,14 @@ local function num(name, def) return mp.get_property_number(name, def) end
 local function fontsize_override()
     local ov = mp.get_property('sub-ass-style-overrides') or ''
     local v = ov:match('Fontsize=([%d%.]+)')
+    return v and tonumber(v) or nil
+end
+
+-- v1.0.11：ASS Script Info 的 PlayResY 覆盖即「Y 位移倍率」的落地证据。
+-- 夹具原始 PlayResY=360，故 ratio = 360 / 覆盖值。
+local function playres_override()
+    local ov = mp.get_property('sub-ass-style-overrides') or ''
+    local v = ov:match('PlayResY=([%d%.]+)')
     return v and tonumber(v) or nil
 end
 
@@ -80,15 +90,16 @@ local function stats(tag)
         end
     end
     local box_h = hi >= lo and (hi - lo + 1) or 0
-    local fs = fontsize_override()
+    local fs, pry = fontsize_override(), playres_override()
     local s = {
-        n = cnt, h = box_h, y0 = lo, y1 = hi, fs = fs,
+        n = cnt, h = box_h, y0 = lo, y1 = hi, fs = fs, pry = pry,
         scale = num('sub-scale', -1), fsz = num('sub-font-size', -1),
         pos = num('sub-pos', -1),
     }
-    print(string.format('FS %s n=%d h=%d y0=%d y1=%d ov=%s scale=%g fsz=%g pos=%g',
+    print(string.format(
+        'FS %s n=%d h=%d y0=%d y1=%d ov=%s PlayResY=%s scale=%g fsz=%g pos=%g',
         tag, cnt, box_h, lo, hi, fs and ('Fontsize=' .. tostring(fs)) or '-',
-        s.scale, s.fsz, s.pos))
+        pry and tostring(pry) or '-', s.scale, s.fsz, s.pos))
     return s
 end
 
@@ -154,28 +165,52 @@ if MODE == 'plain' then
         record('fs-size-step-reversible', near(s.n, ctx.b.n, 0.08),
             string.format('n=%d base=%d', s.n, ctx.b.n))
     end)
-    -- \pos 字幕保持原位：先到边界 150%，再点「下移 5%」不得有任何视觉位移
-    step('pos 150', '05-nudge', function(s)
-        record('fs-nudge-keeps-pos-subtitle',
-            near(s.n, ctx.b.n, 0.08) and math.abs(s.y1 - ctx.b.y1) <= 2,
+    -- v1.0.11：用户报障「内封字幕点下移没反应」的正面验证。
+    -- pos=150 ⇒ ratio=1+0.5/0.94≈1.532 ⇒ PlayResY≈235，\pos(320,60) 的
+    -- 渲染 Y 从 60 推到 92（位移 32px）；Fontsize 同步除以 ratio 补偿字号。
+    step('pos 150', '05-pos150-shift', function(s)
+        ctx.shift = s
+        record('fs-nudge-moves-pos-subtitle',
+            s.y1 - ctx.b.y1 >= 20 and near(s.n, ctx.b.n, 0.15),
             string.format('n %d -> %d, y1 %d -> %d', ctx.b.n, s.n, ctx.b.y1, s.y1))
+        record('fs-nudge-writes-playres',
+            s.pry ~= nil and s.pry < 360 and s.pry > 200,
+            'PlayResY=' .. tostring(s.pry))
+        record('fs-nudge-compensates-fontsize',
+            s.fs ~= nil and s.fs < BASE_UNITS, 'Fontsize=' .. tostring(s.fs))
         record('fs-nudge-boundary-clamps', math.abs(s.pos - 150) < 0.01,
             'sub-pos=' .. s.pos)
-    end, 'nudge 5')
-    step('ass-fontsize-toggle', '06-channel-off', function(s)
+    end)
+    -- 「下移 1%」：从 100 起只 +1，PlayResY 对应 360/(1+0.01/0.94)≈356.2
+    step('pos 100', '06-nudge-1', function(s)
+        record('fs-nudge-1-pos-step', math.abs(s.pos - 101) < 0.01,
+            'sub-pos=' .. s.pos)
+        record('fs-nudge-1-playres-ratio',
+            s.pry ~= nil and math.abs(360 / s.pry - (1 + 0.01 / 0.94)) < 0.005,
+            'PlayResY=' .. tostring(s.pry))
+    end, 'nudge 1')
+    -- 回到默认位置：覆盖项必须清零，后面的「关字号通道」断言才成立
+    step('pos 100', '07-pos-reset', function(s)
+        record('fs-pos-reset-clears-playres', s.pry == nil,
+            'PlayResY=' .. tostring(s.pry))
+        record('fs-pos-reset-restores-visual',
+            near(s.n, ctx.b.n, 0.08) and math.abs(s.y1 - ctx.b.y1) <= 2,
+            string.format('n %d -> %d, y1 %d -> %d', ctx.b.n, s.n, ctx.b.y1, s.y1))
+    end)
+    step('ass-fontsize-toggle', '08-channel-off', function(s)
         record('fs-toggle-off-clears-fontsize', s.fs == nil,
             'ov=' .. tostring(s.fs))
     end)
     -- 关通道后重放用户报障：sub-scale 变成 1.5，但 \pos 字幕像素不动
-    step('scale 1.5', '07-off-scale-no-visual', function(s)
+    step('scale 1.5', '09-off-scale-no-visual', function(s)
         record('fs-channel-off-uses-native-sub-scale', s.scale > 1.4,
             'sub-scale=' .. s.scale)
         record('fs-channel-off-scale-ignored-by-pos',
             s.fs == nil and near(s.n, ctx.b.n, 0.10),
             string.format('n=%d base=%d', s.n, ctx.b.n))
     end)
-    step('scale 1.0', '08-toggle-on', nil, 'ass-fontsize-toggle')
-    step('scale 1.5', '09-toggle-on-restores', function(s)
+    step('scale 1.0', '10-toggle-on', nil, 'ass-fontsize-toggle')
+    step('scale 1.5', '11-toggle-on-restores', function(s)
         record('fs-toggle-on-restores',
             s.fs ~= nil and math.abs(s.fs - BASE_UNITS * 1.5) < 0.6
                 and s.n > ctx.b.n * 1.35,

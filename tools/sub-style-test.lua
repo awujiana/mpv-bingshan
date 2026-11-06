@@ -2186,6 +2186,20 @@ local function fontsize53()
     return nil
 end
 
+-- v1.0.11：Y 位移通道写的是 `PlayResY=原始值/ratio`，反解即得 Y 放大倍率。
+-- 没有覆盖项 ⇒ ratio=1（ASS 原生坐标系）。
+local function playres53()
+    for _, e in ipairs(env.props['sub-ass-style-overrides'] or {}) do
+        local v = e:match('^PlayResY=(.+)$')
+        if v then return tonumber(v) end
+    end
+    return nil
+end
+local function ratio53()
+    local p = playres53()
+    return p and p > 0 and (288 / p) or 1
+end
+
 local restore53 = {}
 
 -- ① 无偏差时**不写** Fontsize（否则会把多 style 的原始字号层级压平）
@@ -2220,10 +2234,24 @@ check('t53-nudge-boundary-flash',
     (last_showtext() or ''):find('位置边界', 1, true) ~= nil, last_showtext())
 check('t53-nudge-boundary-no-change', env.props['sub-pos'] == 150,
     tostring(env.props['sub-pos']))
--- ⑥ 定位字幕不响应 sub-pos 的说明
+-- ⑥ v1.0.11：定位字幕改为**同步位移**（旧版「保持原位」是用户报障本身）。
+--    pos=50 ⇒ delta=-0.5 ⇒ ratio=1-0.5/0.94≈0.468，clamp 到 0.5，
+--    PlayResY 应为 288/0.5=576，且 Fontsize 反向补偿 ×2。
 env.messages['pos']('50')
-check('t53-pos-hint-for-positioned-subtitle',
-    (last_showtext() or ''):find('定位字幕保持原位', 1, true) ~= nil, last_showtext())
+check('t53-pos-hint-synchronized-shift',
+    (last_showtext() or ''):find('定位字幕同步位移', 1, true) ~= nil, last_showtext())
+check('t53-pos-writes-playres-override',
+    playres53() ~= nil and math.abs(playres53() - 576) < 0.01,
+    'PlayResY=' .. tostring(playres53()))
+check('t53-pos-compensates-fontsize',
+    fontsize53() ~= nil and math.abs((fontsize53() or 0) - 42) < 0.01,
+    'Fontsize=' .. tostring(fontsize53()))
+-- 回到默认位置 ⇒ 不留下任何覆盖项（否则会把 ASS 多 style 层级压平）
+env.messages['pos']('100')
+check('t53-pos-default-clears-playres', playres53() == nil,
+    'PlayResY=' .. tostring(playres53()))
+check('t53-pos-default-clears-fontsize', fontsize53() == nil,
+    'Fontsize=' .. tostring(fontsize53()))
 restore53[#restore53 + 1] = r53a
 
 -- ⑦ ±1px 连续微调：从 size_baseline 起步，逐次递增、两次都生效
@@ -2306,12 +2334,21 @@ env.props['sub-font-size'] = 38
 load_script()
 env.events['file-loaded']()
 flush_timers()
--- 通道激活时 sub-scale 被归 1，限缩倍率体现在 ASS Fontsize 里：
---   Fontsize = Default 21 × scale ⇒ scale = Fontsize / 21
+-- v1.0.11：通道激活时 sub-scale 被归 1，限缩倍率体现在 ASS Fontsize 里，
+-- 但 Fontsize 同时还要除以 PlayResY 的 Y 位移倍率作字号补偿：
+--   Fontsize = Default 21 × scale / ratio ⇒ scale = Fontsize × ratio / 21
 -- unit = max_fontsize 21 × 1.2 × (200/288) = 17.5；usable = 200×0.06×0.9 = 10.8
-local scale53 = (fontsize53() or 0) / 21
+-- 黑边反解：target = 0.94 + (0.06 + 0.054)/2 = 0.997 ⇒ ratio = 0.997/0.94 ≈ 1.0606
+local scale53 = (fontsize53() or 0) * ratio53() / 21
 check('t53-barfit-uses-ass-unit', math.abs(scale53 - 0.617) < 0.02,
-    string.format('scale=%.4f Fontsize=%s', scale53, tostring(fontsize53())))
+    string.format('scale=%.4f Fontsize=%s ratio=%.4f',
+        scale53, tostring(fontsize53()), ratio53()))
+check('t53-barfit-writes-playres-shift',
+    playres53() ~= nil and ratio53() > 1 and math.abs(ratio53() - 1.0606) < 0.01,
+    string.format('PlayResY=%s ratio=%.4f', tostring(playres53()), ratio53()))
+check('t53-barfit-anchor-target-inside-bar',
+    ratio53() * 0.94 > 1 - 0.06,   -- 盒底目标必须越过下黑边上沿
+    string.format('target=%.4f bar_top=%.4f', ratio53() * 0.94, 1 - 0.06))
 check('t53-barfit-neutralizes-sub-scale', env.props['sub-scale'] == 1,
     tostring(env.props['sub-scale']))
 check('t53-barfit-writes-shrunk-fontsize',
@@ -2571,6 +2608,304 @@ check('t55-toggle-off-restores-scale', env.props['sub-scale'] == 1,
 r55()
 end
 run_t55()
+
+--------------------------------------------------------------------
+-- T56：v1.0.11「内封 \pos 字幕可下移 / 落进黑边 + 1% 微调」
+-- 真机逐通道实测结论（见 scripts/uosc_subtitle_style.lua 文件头）：
+--   sub-pos / sub-scale / sub-margin-y 对带 \pos 的 explicit ASS 全是死通道；
+--   唯一能改 Y 的是 sub-ass-style-overrides 的 PlayResY，且必须用 Fontsize
+--   反向补偿字号。这里锁死：① 步长 1%；② 位移通道的默认/开关/清残留；
+--   ③ 外挂与缺 PlayResY 时不越界；④ API 快照对外可见；⑤ 黑边反解进黑条。
+-- ⚠ 与 T53 同理用函数包裹，绕开 Lua 5.1 单函数 200 局部变量上限。
+--------------------------------------------------------------------
+function run_t56()
+local ASS56 = table.concat({
+    '[Script Info]', 'ScriptType: v4.00+', 'PlayResX: 384', 'PlayResY: 288', '',
+    '[V4+ Styles]',
+    'Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour',
+    'Style: Default,Microsoft YaHei,21,&H00FFFFFF,&H000000FF', '',
+}, '\n')
+local ASS56_NOPRY = ASS56:gsub('PlayResY: 288', 'PlayResX: 384')
+
+local function setup56(ext, no_pry)
+    local r = fresh_script_env()
+    env.opt_overrides = {}
+    set_tracks(false)
+    if ext then
+        env.props['current-tracks/sub'] = {codec = 'ass', image = false,
+                                           external = true, id = 1}
+    end
+    env.props['sub-font-size'] = 38
+    env.props['sub-ass-style-overrides'] = nil
+    env.props['sub-ass-extradata'] = no_pry and ASS56_NOPRY or ASS56
+    env.props['sid'] = 1
+    env.props['track-list'] = {{type = 'sub', id = 1}}
+    load_script()
+    return r
+end
+local function override56(key)
+    for _, e in ipairs(env.props['sub-ass-style-overrides'] or {}) do
+        local v = e:match('^' .. key .. '=(.+)$')
+        if v then return tonumber(v) end
+    end
+    return nil
+end
+local function ratio56()
+    local p = override56('PlayResY')
+    return p and p > 0 and (288 / p) or 1
+end
+local function api56()
+    local key = 'user-data/uosc_subtitle_style/state'
+    local ok, v = pcall(jdec, env.props[key] or '{}')
+    return ok and v or {}
+end
+local function menu56()
+    env.messages['uosc-version']()
+    env.messages['open-menu']()
+    return jdec(uosc_command()[4])
+end
+
+-- ① 步长 1%：菜单标题与命令值都必须是 1，而不是旧的 5
+local r56a = setup56()
+local m56 = menu56()
+local titles56, values56 = {}, {}
+for _, it in ipairs(m56.items or {}) do
+    titles56[#titles56 + 1] = tostring(it.title)
+    values56[#values56 + 1] = tostring(it.value)
+end
+local t56join, v56join = table.concat(titles56, '\n'), table.concat(values56, '\n')
+check('t56-menu-nudge-title-is-1-percent',
+    t56join:find('上移 1%（微调）', 1, true) ~= nil
+    and t56join:find('下移 1%（微调）', 1, true) ~= nil, t56join:sub(1, 240))
+check('t56-menu-nudge-value-is-1',
+    v56join:find('nudge 1', 1, true) ~= nil
+    and v56join:find('nudge -1', 1, true) ~= nil)
+check('t56-menu-no-5-percent-left', t56join:find('5%（微调）', 1, true) == nil,
+    t56join:sub(1, 240))
+-- 位移通道开关默认开，菜单里有对应项
+check('t56-menu-has-pos-shift-toggle',
+    v56join:find('ass-pos-shift-toggle', 1, true) ~= nil)
+check('t56-pos-shift-default-on', api56().runtime ~= nil
+    and api56().runtime.ass_pos_shift == true, tostring(api56().runtime and api56().runtime.ass_pos_shift))
+r56a()
+
+-- ② 点「下移 1%」：sub-pos +1，PlayResY 按 1+0.01/0.94 反解，Fontsize 补偿
+local r56b = setup56()
+env.messages['nudge']('1')
+check('t56-nudge-1-changes-sub-pos-by-1', env.props['sub-pos'] == 101,
+    tostring(env.props['sub-pos']))
+local want_ratio = 1 + 0.01 / 0.94
+check('t56-nudge-1-writes-playres',
+    override56('PlayResY') ~= nil
+    and math.abs(ratio56() - want_ratio) < 0.002,
+    string.format('PlayResY=%s ratio=%.5f want=%.5f',
+        tostring(override56('PlayResY')), ratio56(), want_ratio))
+check('t56-nudge-1-compensates-fontsize',
+    override56('Fontsize') ~= nil
+    and math.abs((override56('Fontsize') or 0) - 21 / want_ratio) < 0.05,
+    'Fontsize=' .. tostring(override56('Fontsize')))
+check('t56-nudge-hint-says-shift',
+    (last_showtext() or ''):find('同步位移', 1, true) ~= nil, last_showtext())
+check('t56-api-exposes-y-ratio',
+    api56().ass_y_ratio ~= nil
+    and math.abs(api56().ass_y_ratio - want_ratio) < 0.002,
+    'ass_y_ratio=' .. tostring(api56().ass_y_ratio))
+check('t56-api-exposes-shift-active', api56().ass_pos_shift_active == true,
+    tostring(api56().ass_pos_shift_active))
+-- 上移回原点：覆盖项必须全部清掉，不能残留把多 style 层级压平
+env.messages['nudge']('-1')
+check('t56-back-to-default-clears-playres', override56('PlayResY') == nil,
+    tostring(override56('PlayResY')))
+check('t56-back-to-default-clears-fontsize', override56('Fontsize') == nil,
+    tostring(override56('Fontsize')))
+r56b()
+
+-- ③ 关掉位移通道：PlayResY 从 MANAGED_OVERRIDE_KEYS 里一并清掉，
+--    再点下移只动 sub-pos，且明确提示「保持原始定位」
+local r56c = setup56()
+env.messages['nudge']('1')
+env.messages['ass-pos-shift-toggle']()
+check('t56-toggle-off-clears-playres', override56('PlayResY') == nil,
+    tostring(override56('PlayResY')))
+check('t56-toggle-off-clears-fontsize', override56('Fontsize') == nil,
+    tostring(override56('Fontsize')))
+check('t56-toggle-off-api-state', api56().ass_pos_shift_active == false
+    and api56().runtime.ass_pos_shift == false,
+    tostring(api56().ass_pos_shift_active))
+env.messages['nudge']('1')
+check('t56-toggle-off-nudge-has-no-ass-channel',
+    override56('PlayResY') == nil and env.props['sub-pos'] == 102,
+    'sub-pos=' .. tostring(env.props['sub-pos']))
+env.messages['ass-pos-shift-toggle']()
+check('t56-toggle-on-restores-playres', override56('PlayResY') ~= nil,
+    tostring(override56('PlayResY')))
+r56c()
+
+-- ④ 外挂 ASS / 缺 PlayResY：不得写覆盖（否则外挂字幕会被莫名放大）
+local r56d = setup56(true)
+env.messages['nudge']('1')
+check('t56-external-no-playres', override56('PlayResY') == nil,
+    tostring(override56('PlayResY')))
+check('t56-external-no-fontsize', override56('Fontsize') == nil,
+    tostring(override56('Fontsize')))
+r56d()
+local r56e = setup56(false, true)
+env.messages['nudge']('1')
+check('t56-missing-playres-no-playres', override56('PlayResY') == nil,
+    tostring(override56('PlayResY')))
+check('t56-missing-playres-no-fontsize', override56('Fontsize') == nil,
+    tostring(override56('Fontsize')))
+r56e()
+
+-- ⑤ 黑边贴合：反解的盒底目标必须越过下黑边上沿，并对外广播
+local r56f = bars_env(12, 12, 128)
+env.props['sub-ass-extradata'] = ASS56
+env.props['sub-font-size'] = 38
+load_script()
+env.events['file-loaded']()
+flush_timers()
+local bf56 = api56().barfit or {}
+check('t56-barfit-exposes-y-ratio', type(bf56.y_ratio) == 'number'
+    and bf56.y_ratio > 1,
+    'y_ratio=' .. tostring(bf56.y_ratio))
+check('t56-barfit-anchor-inside-bottom-bar',
+    type(bf56.anchor_target) == 'number' and bf56.anchor_target > 1 - 0.06,
+    string.format('target=%s bar_top=%.4f', tostring(bf56.anchor_target), 1 - 0.06))
+check('t56-barfit-playres-written', override56('PlayResY') ~= nil
+    and math.abs(ratio56() - (bf56.y_ratio or 0)) < 0.002,
+    string.format('PlayResY=%s ratio=%.4f api=%.4f',
+        tostring(override56('PlayResY')), ratio56(), bf56.y_ratio or -1))
+-- 关闭贴合后位移通道回落，不能把 PlayResY 带到下一个文件
+env.messages['letterbox-toggle']()
+check('t56-barfit-off-clears-playres', override56('PlayResY') == nil,
+    tostring(override56('PlayResY')))
+r56f()
+end
+run_t56()
+
+--------------------------------------------------------------------
+-- T57：v1.0.11「左上角 OSD 输出可用配置文件关闭」
+-- 用户诉求：script-opts/uosc_subtitle_style.conf 加 show_report=no 后，
+-- 左上角不再弹检测报告；但检测 / 自动黑白预设 / 全内封轨检查必须照跑，
+-- 且不能临时改动 osd-align-x / osd-align-y。菜单与 API 也能读到开关状态。
+--------------------------------------------------------------------
+function run_t57()
+local function report_texts()
+    local out = {}
+    for _, t in ipairs(env.showtexts or {}) do
+        if t ~= ' ' and (t:find('字幕', 1, true) or t:find('预设', 1, true)) then
+            out[#out + 1] = t
+        end
+    end
+    return table.concat(out, '\n')
+end
+local function setup57(show_report)
+    local r = fresh_script_env()
+    set_tracks(false)
+    env.opt_overrides = {show_report = show_report}
+    env.vfs['C:/fake-config/colored.ass'] = make_ass('&H0000FFFF', '&H00FF0000')
+    set_external_track('C:/fake-config/colored.ass')
+    env.props['osd-align-x'] = 'center'
+    env.props['osd-align-y'] = 'bottom'
+    load_script()
+    return r
+end
+local function api57()
+    local ok, v = pcall(jdec, env.props['user-data/uosc_subtitle_style/state'] or '{}')
+    return ok and v or {}
+end
+
+-- ① 默认（show_report=yes）：报告照常出现在左上角
+local r57a = setup57(true)
+env.showtexts = {}
+env.messages['inspect']()
+local on_text = report_texts()
+check('t57-report-on-shows-top-left',
+    on_text:find('主色 #FFFF00', 1, true) ~= nil
+    and on_text:find('已套用预设样式', 1, true) ~= nil, on_text:sub(1, 200))
+check('t57-report-on-sets-osd-align',
+    env.props['osd-align-x'] == 'left' and env.props['osd-align-y'] == 'top',
+    string.format('%s/%s', tostring(env.props['osd-align-x']),
+        tostring(env.props['osd-align-y'])))
+check('t57-report-on-api-state', api57().runtime ~= nil
+    and api57().runtime.show_report == true,
+    tostring(api57().runtime and api57().runtime.show_report))
+r57a()
+
+-- ② conf show_report=no：不弹报告、不改对齐，但黑白预设仍自动套用
+local r57b = setup57(false)
+env.showtexts = {}
+env.messages['inspect']()
+local off_text = report_texts()
+check('t57-report-off-no-top-left-text',
+    not off_text:find('主色 #FFFF00', 1, true)
+    and not off_text:find('已套用预设样式', 1, true), off_text:sub(1, 200))
+check('t57-report-off-keeps-osd-align',
+    env.props['osd-align-x'] == 'center' and env.props['osd-align-y'] == 'bottom',
+    string.format('%s/%s', tostring(env.props['osd-align-x']),
+        tostring(env.props['osd-align-y'])))
+check('t57-report-off-still-detects-and-applies-preset',
+    env.props['sub-color'] == '#FFFFFF'
+    and env.props['sub-outline-color'] == '#000000',
+    string.format('color=%s outline=%s', tostring(env.props['sub-color']),
+        tostring(env.props['sub-outline-color'])))
+check('t57-report-off-api-state', api57().runtime ~= nil
+    and api57().runtime.show_report == false,
+    tostring(api57().runtime and api57().runtime.show_report))
+-- OSD 微扰（黑边贴合 / 稳态重绘）也不许把报告偷偷补回来
+env.showtexts = {}
+env.messages['letterbox-refresh']()
+check('t57-report-off-barfit-does-not-restore',
+    not report_texts():find('主色 #FFFF00', 1, true), report_texts():sub(1, 200))
+r57b()
+
+-- ③ 菜单开关：运行时可临时打开，且菜单项与 API 白名单都在
+local r57c = setup57(false)
+env.messages['uosc-version']()
+env.messages['open-menu']()
+local vals57 = {}
+for _, it in ipairs((jdec(uosc_command()[4]).items or {})) do
+    vals57[#vals57 + 1] = tostring(it.value) .. '|' .. tostring(it.title)
+end
+local joined57 = table.concat(vals57, '\n')
+check('t57-menu-has-report-toggle',
+    joined57:find('report-toggle', 1, true) ~= nil
+    and joined57:find('显示左上角检测报告', 1, true) ~= nil)
+env.messages['report-toggle']()
+check('t57-report-toggle-on-api-state', api57().runtime ~= nil
+    and api57().runtime.show_report == true,
+    tostring(api57().runtime and api57().runtime.show_report))
+env.showtexts = {}
+env.messages['inspect']()
+check('t57-report-toggle-on-shows-again',
+    report_texts():find('主色 #FFFF00', 1, true) ~= nil,
+    report_texts():sub(1, 200))
+env.messages['report-toggle']()
+check('t57-report-toggle-off-api-state', api57().runtime ~= nil
+    and api57().runtime.show_report == false,
+    tostring(api57().runtime and api57().runtime.show_report))
+r57c()
+-- API 白名单：外部脚本可用 call report-toggle 转发（call 是异步派发，
+-- 测试桩只记录转发的 script-message-to，不会同步执行消息回调）
+local r57d = setup57(true)
+env.script_messages = {}
+env.messages['api']('client', 'r1', 'call', 'report-toggle')
+local fwd57, reply57
+for _, c in ipairs(env.script_messages or {}) do
+    if c[1] == 'script-message-to' and c[2] == 'uosc_subtitle_style'
+        and c[3] == 'report-toggle' then fwd57 = c end
+    if c[3] == 'uosc_subtitle_style-api-response' then
+        reply57 = jdec(c[5] or '{}')
+    end
+end
+check('t57-api-call-report-toggle', fwd57 ~= nil
+    and reply57 ~= nil and reply57.ok == true
+    and reply57.dispatched == 'report-toggle',
+    string.format('fwd=%s reply=%s', tostring(fwd57 ~= nil),
+        reply57 and tostring(reply57.dispatched) or 'none'))
+r57d()
+end
+run_t57()
 
 for _, r in ipairs(restore50) do r() end
 restore51(); restore49(); restore48()

@@ -8,8 +8,17 @@
 
 ## [未发布]
 
+### 新增（v1.0.11）
+
+- `uosc_subtitle_style.lua` **v1.0.11**：新增「内封定位字幕可下移」通道。真机逐通道实测确认带 `\pos` 的 explicit ASS 事件对 `sub-pos` / `sub-scale` / `sub-font-size` 全部豁免、`sub-margin-y` 在 ASS 下是死通道，唯一能改 Y 的是覆盖 ASS `[Script Info]` 的 `PlayResY`；据此把「上移/下移」与「上下黑边贴合」折成 `ratio` 写进 `PlayResY`，并用 `Fontsize` 除以 `ratio` 补回物理字号。对话轨道本身是 `\pos` 对白时也能整条推进下黑边、点下移即时生效。
+- 菜单步长 **上移/下移 5% → 1%**（`nudge` 默认 1），便于把 `\pos` 内封字幕一点点推进黑边；新增菜单项「内封定位字幕可下移」及消息 `ass-pos-shift-toggle`（默认开，可关回「保持原位」）。
+- **左上角报告可关闭**（用户新需求）：conf 新增 `show_report=yes`（设 `no` 永久关闭）、运行时菜单「显示左上角检测报告」及消息 `report-toggle`。`flash_tl()` 成为左上角 `show-text` 唯一出口，关闭时不输出、也不临时改 `osd-align-*`；检测/黑白预设/全内封轨检查/黑边贴合/位置字号通道全部照常执行。`runtime.report_shown` 计数供 API 与门禁验证。
+- 对外 API 快照新增 `ass_pos_shift_active` / `ass_y_ratio` / `barfit.y_ratio` / `barfit.anchor_target` / `runtime.ass_pos_shift` / `runtime.show_report` / `runtime.report_shown`；白名单新增 `ass-pos-shift-toggle` / `report-toggle`（共 30 个）。API 版本仍为 `1.0.0`（只增可选字段）。
+- `tools/sub-style-probe-shift.lua` + `tools/sub-style-e2e.py` 第 **5g**（`\pos` 对白进黑边 / 点下移生效 / 关通道复现原报障，15 条）与第 **5h**（`show_report=yes|no` 两轮对照、关闭零输出、`report-toggle` 双向生效，各 11 条）真机门禁；`tools/sub-style-test.lua` 新增 **T56**（1% 步长 / PlayResY / Fontsize 补偿 / 黑边反解 / API）与 **T57**（报告开关），单测 360 → **373 条全绿**。
+
 ### 改进
 
+- conf 新增 `ass_pos_shift=yes` / `ass_anchor_ratio=0.94` / `show_report=yes`，`nudge=1`；`sub-style-conf-verify.py` 校验全部键的类型。架构文档新增 **§20**、API 文档与脚本头说明同步。
 - `tools/sub-style-e2e.py` 适配**独立公开仓库**布局：`MPV_EXE` + `--config-dir` 隔离用户全局配置、临时复制 uosc、无 `uosc_staff_credits` 时把 7 条职员表 API 断言从期望表移除（不伪造 PASS）。
 - `tools/sub-style-probe-api.lua` 新增 `SUBSTYLE_STAFF_API` 开关，让 API 探针可在只装了字幕脚本的环境运行。
 - `tools/lua-syntax-check.lua` 改为按相对路径读取 Lua 文件，仓库位于中文目录（如 `D:\编程\...`）时不再报「无法读取文件」；生产端仍检查全部 196 个文件。
@@ -51,7 +60,7 @@
 ### 已知限制
 
 - 脚本更新**只落盘、下次启动 mpv 生效**；看到旧版 OSD 文案需完全退出并重启播放器。
-- 带 `\pos` 的 explicit ASS 位置不可调（保持原位），只能改尺寸 / 样式；强行 `strip` 会丢定位标签。
+- 带 `\pos` 的 explicit ASS 仍不能用 `sub-pos` / `sub-margin-y` 移动；v1.0.11 起改由 `PlayResY` 覆盖实现整体比例位移（见架构文档 §20）。这是解码器级共享、以画面顶部为原点的比例位移，因此次轨 `\pos` 字幕无法同时进上黑边；`ass_pos_shift=no` 时回到「保持原位」。⚠ 强行 `strip` 会丢定位标签并使 style-overrides 整体失效，禁止使用。
 - 粗体与 `sub-ass-style-overrides` 是解码器级共享通道，主 / 次轨无法完全独立。
 - 图形字幕（PGS/VOBSUB）不走 libass，样式 / 位置不可调。
 - 独立公开仓库 `awujiana/uosc_subtitle_style` 的 Release 需与配置仓库脚本版本同步发布，否则新用户从该仓库下载会拿到旧版（自更新器本身不会降级）。

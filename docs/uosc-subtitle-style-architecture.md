@@ -719,7 +719,9 @@ detect_bars(screenshot-raw('video'))
 ### 16.5 硬边界与真机结果
 
 带 `\pos` 的 explicit ASS 事件对 `sub-pos` / `sub-scale` / `sub-margin-y` 全部豁免，
-保持原位（用户确认的实现范围，不 strip、不重写事件）；窗口 letterbox 交给 mpv 原生。
+保持原位（v1.0.7 当时确认的实现范围，不 strip、不重写事件）；窗口 letterbox 交给 mpv 原生。
+> ⚠ **v1.0.11 已更新**：不 strip、不重写事件的前提不变，但改由 `PlayResY` 覆盖让
+> `\pos` 对白可整体位移、落进黑边。见 §20，本节的「保持原位」只描述 v1.0.7 结论。
 
 | 场景 | 结果 |
 | --- | --- |
@@ -876,7 +878,8 @@ v1.0.7 的 `barfit.scale` 只写 `sub-scale`/`sub-margin-y`，对 `\pos` 事件�
 v1.0.9 让 `effective_scale()` 直接读 `barfit.scale`，因此限缩倍率自动进入
 `Fontsize`；`compute_barfit()` 新增 `unit_px` 参数，内封 ASS 时按
 `max(Fontsize) × 1.2 × frame_h / PlayResY` 估算单行物理高度，避免拿 720p 等效字号
-去估 `PlayResY=288` 的内封轨。位置仍按用户确认的范围**保持原位**，不 `strip`、不重写事件。
+去估 `PlayResY=288` 的内封轨。v1.0.9 位置仍**保持原位**，不 `strip`、不重写事件
+（v1.0.11 起由 `PlayResY` 覆盖把对白送进黑边，见 §20）。
 
 黑边贴合激活时 `size-step` 会把放大后的字号写进 `preset.size` 并 `save_preset()`，
 作用范围是**全局预设**（下一个黑边视频沿用同一字号），对应「嫌自动缩小太小、点几下
@@ -987,7 +990,7 @@ v1.0.7 之后，脚本内部积累了大量「外部脚本想知道但拿不到�
 
 | 标识 | 当前值 | 何时递增 |
 | --- | --- | --- |
-| `-- @version:`（脚本头） | `1.0.10` | **任何**功能改动，否则自更新器误判本地版本（§18.7） |
+| `-- @version:`（脚本头） | `1.0.11`（本节撰写时为 `1.0.10`，v1.0.11 见 §20） | **任何**功能改动，否则自更新器误判本地版本（§18.7） |
 | `API_VERSION`（对外契约） | `1.0.0` | 仅不兼容改动：删字段/改类型 → MINOR，改调用格式或回复消息名 → MAJOR |
 
 新增可选字段不升 API 版本；`list-actions` 动态返回白名单，调用方不必硬编码数量。
@@ -1030,3 +1033,116 @@ usable      = 200 × min(top,bottom)/200 × (1 - pad=0.10)
 | 语法 / 配置 | `lua-syntax-check.lua`（196 文件）/ `sub-style-conf-verify.py` | 全绿；v1.0.10 **未新增 conf 键** |
 
 > 本次 v1.0.9 → **v1.0.10**。
+
+## 20. v1.0.11：内封 `\pos` 对白落进黑边、1% 微调与可关闭的左上角报告
+
+两条同源报障 + 一条新需求一起收口：① 用户截图里「对话轨道字幕没在黑边内输出」——
+对白「这到底是…」上半截压在画面内容上，只有下半截探进下黑边；② 「内封字幕点下移
+没反应，只有外挂字幕有反应」；③ 用户追加「配置文件可关闭左上角消息输出」。
+
+### 20.1 真机逐通道定位：`\pos` 对白也是 explicit，唯一能动 Y 的是 `PlayResY`
+
+用纯 Python 最小 Matroska 夹具（`tools/sub-style-mkv-fixture.py`，MJPEG 单帧 +
+内封 `S_TEXT/ASS` 轨）复现：两条事件都带 `\pos`（顶部注释 `\pos(320,60)` +
+底部对白 `\pos(320,338)`），上下各 24px 内嵌黑条。这与示例视频里「底部对白点下移
+毫无反应」是同构的——普通对白 `sub-pos` 本来有效，只有 explicit 定位事件才会失效。
+
+`tools/sub-style-probe-shift.lua` / 临时 `probe-shift.lua` 逐通道真机实测
+（640×360，`screenshot-raw('subtitles')` 与 `('video')` 逐像素差分）：
+
+| 施加项 | `\pos` 字幕像素 | 结论 |
+| --- | --- | --- |
+| `sub-pos` 50 / 150 | `y41..58` 纹丝不动 | 只动普通对白 |
+| `sub-margin-y` 22→100 | 两者都不动 | **ASS 下是死通道**，v1.0.7 的 margin 方案对内封无效 |
+| `sub-scale` 1.5 | 不动 | 显式定位豁免 |
+| `PlayResY` 360→200 | `y41..58 → y87..107`（下移 46px） | ✅ 唯一有效通道 |
+| `PlayResY=200` + `Fontsize=11` | 字宽 `x266..372` 不变 | 字号需反向补偿 |
+| `sub-ass-override=strip` | 顶部注释消失、对白重叠 | 会删 `\pos` 且让 style-overrides 整体失效，**禁用** |
+
+`sub-ass-style-overrides` 不仅能改 `[V4+ Styles]`，也能覆盖 `[Script Info]` 的
+`PlayResY`；`force` 模式下同样生效，且不影响 `PrimaryColour` 等颜色覆盖（真机验证）。
+
+### 20.2 位移公式与字号补偿
+
+```
+y_render = y_ass × 帧高 / PlayResY
+PlayResY写入值 = 原始 PlayResY / ratio     (ratio > 1 ⇒ 整体下移)
+Fontsize写入值 = 原始 Fontsize × size_factor × effective_scale / ratio
+```
+
+缩小 `PlayResY` 相当于所有 `\pos` 的 Y 按 `ratio` 放大：**底部对白位移大、顶部 signs
+位移小**，正好符合「对白下移进黑边、signs 别乱跑」的需求。代价是字体也按同比例
+放大，必须用 `Fontsize` 除以 `ratio` 补回物理字号。脚本里：
+
+- `ass_pos_shift_active()`：`runtime.ass_pos_shift` 且目标轨是内封 ASS 且能从
+  `sub-ass-extradata` 读到 `PlayResY`；读不到就不写覆盖、也不误补偿。
+- `ass_y_ratio()`：**即时求值不缓存**，切换 `set_pos` / `disable_barfit` / `reset`
+  不会留下过期比例；`ass_fontsize_override()` 与 `ass_playres_y_override()` 取同一个值。
+- 补偿与「字号通道是否开启」无关：关掉 `ass-fontsize` 只是不再用 `Fontsize` 表达
+  缩放/字号，不代表可以放任坐标系改动画面字号。
+- `ratio == 1` 时两个覆盖都不写，保留 ASS 原生坐标与多 style 的原始字号层级。
+
+### 20.3 `ass_y_ratio` 的两条来源与黑边反解
+
+1. **黑边贴合优先**：`refresh_barfit()` 在 `ass_pos_shift_active()` 时反解
+   ```
+   box_frac = unit × fit.scale / 帧高
+   target   = (1 - bottom) + (bottom + box_frac) / 2
+   y_ratio  = clamp(target / ass_anchor_ratio, 0.5, 2.0)
+   ```
+   `target` 是「对白盒底越过下黑边上沿、且整条字幕落入黑边」的锚点比例；
+   `ass_anchor_ratio=0.94` 是未覆盖时 `\pos` 对白盒底相对帧高的实测比例
+   （示例 MKV 2160p 盒底 y2038 ⇒ 0.943）。有偏差时用 1% 微调自行校准。
+2. **否则跟随 `sub-pos`**：`ratio = 1 + (cur().pos - 默认pos)/100 / anchor`，
+   让「上移/下移」也能同步推动 `\pos` 字幕，clamp 到 `[0.5, 2.0]` 防极端值。
+
+外挂字幕仍走原来的 `sub-margin-y` 分支，两条路互不干扰。⚠ `PlayResY` 是解码器级
+共享项，主/次轨同变；且它是「以画面顶部为原点的比例位移」，次轨 `\pos` 字幕无法
+同时进上黑边（此前 `sub-margin-y` 对 ASS 本就没生效，不构成回退）。
+
+### 20.4 步长 5% → 1%
+
+`o.nudge` 与 conf 的 `nudge` 由 `5` 改为 `1`，菜单标题由模板自动生成
+「上移 1%（微调）」/「下移 1%（微调）」。`set_pos()` 里新增 `nudge_reconfigure()`
+（`sub-margin-y` / `sub-scale` 无 UPDATE flag，需重跑 `configure_ass`），并在启用
+位移通道时于提示里标注「内封 `\pos` 定位字幕同步位移 ×N」。新增菜单项
+「内封定位字幕可下移」与消息 `ass-pos-shift-toggle`，默认开，关掉即回到
+v1.0.10 的「保持原位」，用于复现原报障。
+
+### 20.5 `show_report`：只关显示，不关功能（用户新需求）
+
+conf 新增 `show_report=yes`（`no` 永久关闭）。设计要点：
+
+- `flash_tl()` 是左上角 `show-text` 的**唯一出口**，关闭时直接 `return`：不
+  `show-text`、**不临时改 `osd-align-x` / `osd-align-y`**（避免影响别的 OSD）。
+- `refresh_barfit()` 里「OSD 微扰后补回报告」的路径同样加 `runtime.show_report`
+  判断，否则关掉的报告会被这条路径偷偷放回来。
+- 只管显示：样式检测、灰色/彩色识别、自动黑白预设、全内封轨检查、上下黑边贴合、
+  位置/字号通道**全部照常执行**，功能一点不少。
+- 菜单「显示左上角检测报告」+ 消息 `report-toggle` 是**运行时**开关（不落盘，
+  重启回到 conf 值），也进了对外 API 白名单。
+- `runtime.report_shown` 计数供 API / 真机门禁验证开关是否真的生效；
+  `api_snapshot()` 暴露 `runtime.show_report`、`runtime.report_shown`、
+  `ass_pos_shift_active`、`ass_y_ratio`、`barfit.y_ratio`、`barfit.anchor_target`。
+
+⚠ 真机判据修正：`show-text` 不写入 `osd-msg1/2/3`（实测三者恒空），
+`screenshot-raw('window')` 与 `('video')` 分辨率又不同（768×432 vs 640×360）
+无法逐像素差分，因此改用脚本自身的 `report_shown` 计数判断「是否真的输出过」。
+
+### 20.6 门禁与真机
+
+| 层 | 位置 | 结果 |
+| --- | --- | --- |
+| 单测 | `tools/sub-style-test.lua` T56（1% 步长 / PlayResY / Fontsize 补偿 / 黑边反解 / API）+ T57（报告开关） | 360 → **373 条全绿** |
+| 真机 5g | `tools/sub-style-probe-shift.lua MODE=bars` + `sub-style-e2e.py` 第 5g 组 | **15 条**：对白整条进下黑边、1% 位移生效、关通道复现「点下移没反应」、开关可逆 |
+| 真机 5h | `MODE=report` + `--script-opts=...-show_report=yes\|no` 两轮对照 | 各 **11 条**：conf 读到、关闭零输出、检测链照跑、`report-toggle` 双向生效 |
+| 语法 / 配置 | `lua-syntax-check.lua`（196 文件）/ `sub-style-conf-verify.py`（含 `nudge` / `ass_pos_shift` / `ass_anchor_ratio` / `show_report`） | 全绿 |
+
+⚠ 5h 用 `preset-save`（另一条必然经过 `flash_tl` 的入口）做正对照，而不是等自动
+检测链：本夹具是 MJPEG 单帧 + 内封 ASS，真机实测 mpv 对图片型内封字幕**不暴露
+`sub-text`（恒为 nil）**，`inspect_style()` 的像素采样分支被守门条件挡住，自动报告
+根本不会走到 `flash_tl`。这样把「开关是否管住输出」与「检测链能否触发」两个变量
+彻底分开，避免对照组假阴性。⚠ 每次真机前必须清状态文件：残留 `pos=105/150`
+会让 `ass_y_ratio()` 误判成用户位移，造成「关贴合不清残留」的假失败。
+
+> 本次 v1.0.10 → **v1.0.11**。

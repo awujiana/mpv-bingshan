@@ -1,5 +1,5 @@
 ---- uosc_subtitle_style.lua —— 内封字幕样式快速切换（uosc 菜单）
--- @version: 1.0.10
+-- @version: 1.0.11
 -- ⚠ 上面这行版本标记由 script-modules/updater.lua 读取，用来判定本地版本：
 --   本地 >= 远端时不更新、绝不降级。改动功能时请同步递增版本号，否则
 --   自更新会认为本地仍是旧版（或误判成同版本反复「已更新」）。
@@ -78,6 +78,28 @@
 --     估算盒高改用 原始 Fontsize × 1.2 × 帧高/PlayResY，比 720p 等效估算更准。
 --     代价：Fontsize 是解码器级共享列表 ⇒ 缩放/字号在此模式下主/次轨同变；
 --     且样式表只有一个 Fontsize，多 style 的字幕会被统一到同一字号。
+--   * 内封定位 ASS 的**垂直位置**（v1.0.11）：真机逐通道实测（640×360 夹具，
+--     \pos(320,60) explicit 事件 + 普通底部对白）：
+--       sub-pos 50/150     → \pos 字幕 y41..58 纹丝不动（只动普通对白）
+--       sub-margin-y 100   → 两者都不动（ASS 下 sub-margin-y 是死通道）
+--       sub-scale 1.5      → \pos 字幕不动
+--       PlayResY=200       → \pos 字幕 y41..58 → y87..107（下移 46px）
+--       +Fontsize=11       → 字号/字宽补回原样（x266..372 不变）
+--     即 ASS Script Info 的 PlayResY 也可被 sub-ass-style-overrides 覆盖。
+--     y_render = y_ass × 帧高 / PlayResY，缩小 PlayResY ⇒ 所有 \pos 的 Y
+--     按同一比例放大（底部对白位移大、顶部 signs 位移小，正好符合需求）；
+--     字体同时按同比例放大，必须把 Fontsize 除以该比例补回来。
+--     force 模式下同样生效，且 PrimaryColour 等颜色覆盖不受影响（真机验证）。
+--     本版本据此把「上移/下移」与「上下黑边贴合」折成 ratio 写进 PlayResY：
+--       ① nudge ±1%  ⇒ ratio = 1 ± 0.01/anchor0，\pos 字幕同步微移；
+--       ② 黑边贴合    ⇒ 由黑条厚度与缩后盒高反解 ratio，把对白锚点
+--                        送进下黑边（sub-margin-y 对 ASS 无效，不能再用）。
+--     ⚠ ratio 是解码器级共享项，主/次轨同变；PlayResY 缩放是「以画面顶部为
+--       原点的比例位移」，因此次轨 \pos 字幕无法同时进上黑边（此前的
+--       sub-margin-y 方案对 ASS 本来也没生效，不构成回退）。
+--     ⚠ 不要用 sub-ass-override=strip 来「修」位置：实测 strip 会删掉 \pos
+--       让顶部注释/招牌翻译与对白完全重叠，且 sub-ass-style-overrides 整个
+--       失效（Fontsize=30 无任何效果），黑白预设与字号通道都会崩。
 --
 -- 入口（script-message）：
 --   open-menu       打开 uosc 菜单（未检测到 uosc 时降级为循环切换）
@@ -101,6 +123,8 @@
 --   fix-override    把目标轨 sub-ass-override 设为 scale（位置/样式的前置条件）
 --   letterbox-toggle / letterbox-refresh  上下黑边贴合开关 / 立即重新检测
 --   ass-fontsize-toggle     内封定位 ASS 的缩放/字号通道开关
+--   ass-pos-shift-toggle    内封定位 ASS 的垂直位移通道开关（v1.0.11）
+--   report-toggle           左上角检测报告开关（v1.0.11；conf show_report 定初值）
 
 local msg = require('mp.msg')
 local utils = require('mp.utils')
@@ -111,7 +135,7 @@ local o = {
     pos_default = 100,   -- 主字幕默认位置（mpv 原生默认 sub-pos=100）
     sec_pos_default = 0, -- 次字幕默认位置（mpv 原生默认 secondary-sub-pos=0，即顶部）
     scale_default = 1,   -- 默认缩放倍率
-    nudge = 5,           -- 菜单微调的步长（% 屏幕高度）
+    nudge = 1,           -- 菜单微调的步长（% 屏幕高度）；v1.0.11 由 5 改为 1
     pos_min_gap = 25,    -- 两轨位置避让的最小间距（% 屏幕高度；实测一档 ≈ 84px）
     fallback_cycle = true, -- 无 uosc 时 open-menu 降级为循环切换
     fonts = 'Noto Sans CJK SC,Noto Serif CJK SC,Noto Sans CJK KR,Noto Serif CJK KR', -- 字体候选（逗号分隔）
@@ -123,6 +147,9 @@ local o = {
                               -- 故对「非主色的高饱和元素」单独用这个更低阈值（0.5%）。
     inspect_delay = 1.2,      -- 载入后等待多久做样式检测（秒）
     report_ms = 6000,         -- 左上角检测报告的显示时长（毫秒）
+    -- v1.0.11：左上角 OSD 消息总开关。no = 完全不输出检测报告 / 预设保存提示，
+    -- 但样式检测与自动黑白预设**照常执行**（只是不显示），也不改 osd-align-*。
+    show_report = true,
     inspect_retries = 15,     -- 检测重试次数：字幕未及时加载/片头无对白时，等第一句对白出现再检
     inspect_retry_delay = 1.0, -- 检测重试间隔（秒）
     preset_enabled = true,    -- 载入时默认套用预设样式
@@ -181,6 +208,14 @@ local o = {
     size_min = 12,
     size_max = 96,
     size_step_saves_preset = true, -- 黑边贴合时 ±字号 一并存进全局预设缓存
+    -- v1.0.11「内封 \pos 字幕也能下移 / 进黑边」：sub-pos / sub-margin-y 对
+    -- explicit ASS 全部豁免，唯一能改 Y 的通道是覆盖 ASS Script Info 的
+    -- PlayResY（见文件头真机实测表）。关掉则回到 v1.0.10 行为：保持原位。
+    ass_pos_shift = true,
+    -- 未施加覆盖时，\pos 对白锚点（盒底）相对帧高的比例。示例 MKV 实测
+    -- 2160p 下盒底 y2038 ⇒ 0.943；Netflix/流媒体 ASS 通常在 0.92~0.96。
+    -- 只用于把「±1% 屏幕高度」换算成 PlayResY 比例，可用菜单微调自己校准。
+    ass_anchor_ratio = 0.94,
 }
 options.read_options(o, 'uosc_subtitle_style')
 
@@ -190,6 +225,9 @@ local runtime = {
     include_gray = o.preset_include_gray and true or false,
     bar_fit = o.letterbox_fit and true or false,
     ass_fontsize = o.ass_fontsize and true or false,
+    ass_pos_shift = o.ass_pos_shift and true or false,
+    show_report = o.show_report and true or false,
+    report_shown = 0,   -- 实际输出过几次左上角消息；供 API / 真机门禁验证开关
 }
 
 --------------------------------------------------------------------
@@ -706,8 +744,11 @@ end
 -- FontName/Fontsize 是早期版本写入过的键，保留以清理旧状态残留；
 -- v1.0.6 起还会写 FontName / PrimaryColour / OutlineColour（全样式覆盖通道），
 -- 「恢复原样」时必须把这些键一并剔除，否则 ASS 原色再也回不来。
+-- v1.0.11 新增 PlayResY（ASS Script Info 的 Y 坐标系，位移通道专用），
+-- 关掉位移或恢复原样时同样必须剔除，否则 \pos 字幕永远停在上次的偏移上。
 local MANAGED_OVERRIDE_KEYS = {
     'FontName', 'Fontsize', 'Bold', 'PrimaryColour', 'OutlineColour', 'Outline',
+    'PlayResY',
 }
 
 local function same_list(a, b)
@@ -784,14 +825,45 @@ local function ass_style_info()
             max_fontsize = max_fs}
 end
 
--- 通道激活条件：内封 + ASS + 能读到样式表 + 运行时开关开。
--- 外挂字幕 / SRT / 图形字幕一律沿用原来的 sub-scale / sub-font-size 通道；
+-- 公共判定：内封 + ASS + 能读到样式表。外挂字幕 / SRT / 图形字幕一律
+-- 沿用原来的 sub-scale / sub-font-size / sub-margin-y 通道；
 -- 单测桩不注入 sub-ass-extradata，故旧用例行为完全不变。
+local function internal_ass_active()
+    return track_info() == 'ass' and track_origin() == '内封'
+        and ass_style_info() ~= nil
+end
+
+-- 字号通道（v1.0.9）：把缩放 / 字号折进 ASS Fontsize。
 local function ass_channel_active()
-    if not runtime.ass_fontsize then return false end
-    if track_info() ~= 'ass' then return false end
-    if track_origin() ~= '内封' then return false end
-    return ass_style_info() ~= nil
+    return runtime.ass_fontsize and internal_ass_active()
+end
+
+-- 位移通道（v1.0.11）：把垂直位移折进 ASS PlayResY。
+-- 必须能读到 PlayResY 才开，否则写不出覆盖项却会误补偿 Fontsize。
+local function ass_pos_shift_active()
+    if not (runtime.ass_pos_shift and internal_ass_active()) then return false end
+    local info = ass_style_info()
+    return info ~= nil and info.playres_y ~= nil
+end
+
+-- 当前应施加的 Y 坐标系放大倍率（1 = 不位移，>1 = 整体下移）。
+--   ① 黑边贴合优先：由 detect_bars 的结果反解，把对白锚点送进下黑边；
+--   ② 否则跟随目标轨 sub-pos 相对默认值的偏移，1% 步长同步作用于 \pos 字幕。
+-- 刻意**即时求值不缓存**：set_pos / disable_barfit / reset 切换时不会留下
+-- 上次的过期比例；ass_fontsize_override 与 ass_playres_y_override 取同一个值。
+local function ass_y_ratio()
+    if not ass_pos_shift_active() then return 1 end
+    if barfit_active() and barfit and barfit.y_ratio then
+        return clamp(barfit.y_ratio, 0.5, 2.0)
+    end
+    local base_pos = is_sec() and (o.sec_pos_default or 0)
+        or (o.pos_default or 100)
+    local anchor = o.ass_anchor_ratio
+    if type(anchor) ~= 'number' or anchor < 0.2 or anchor > 1.2 then
+        anchor = 0.94
+    end
+    local delta = (cur().pos - base_pos) / 100
+    return clamp(1 + delta / anchor, 0.5, 2.0)
 end
 
 -- 目标轨真正应生效的缩放倍率（黑边贴合 > 双语布局 > 用户设定）
@@ -808,24 +880,46 @@ end
 -- force 模式下两条通道互不干扰（真机实测）；scale 模式下 apply_all 会把
 -- sub-scale 归 1，避免普通对白被「sub-scale × Fontsize」双叠加。
 local function ass_fontsize_override(target_style)
-    if not ass_channel_active() then return nil end
-    local sc = effective_scale()
+    local ch = ass_channel_active()
+    local ratio = ass_y_ratio()
+    -- 位移通道改 PlayResY 会让字体按同比例放大，必须用 Fontsize 反向补回来。
+    -- 这个补偿与「字号通道是否开启」无关：用户关掉 ass-fontsize 只意味着
+    -- 不再用 Fontsize 表达缩放/字号，不代表可以放任坐标系改动画面字号。
+    local need_comp = ass_pos_shift_active() and math.abs(ratio - 1) >= 0.0005
+    if not ch and not need_comp then return nil end
+    local sc = ch and effective_scale() or 1
     local base_px = baseline.size or o.size_baseline
     local size_factor = 1
-    if target_style.size and base_px > 0 then
+    if ch and target_style.size and base_px > 0 then
         size_factor = target_style.size / base_px
     end
-    -- 快路径：字号=原样且缩放=×1，不写 Fontsize
-    if not target_style.size and math.abs(sc - 1) < 0.001 then return nil end
+    -- 快路径：字号=原样、缩放=×1 且没有 Y 位移，不写 Fontsize
+    if not need_comp and not (ch and target_style.size)
+        and math.abs(sc - 1) < 0.001 then return nil end
     local info = ass_style_info()
     local base_units = info and info.base_fontsize
         or (o.size_baseline * (o.ass_fontsize_ratio or 0.5625))
-    local factor = clamp(size_factor * sc, 0.02, 20)
+    -- y_render = y_ass × 帧高 / PlayResY；PlayResY 除以 ratio ⇒ 字体放大
+    -- ratio 倍 ⇒ Fontsize 必须同时除以 ratio，物理字号才保持不变。
+    local factor = clamp(size_factor * sc / ratio, 0.02, 20)
     -- 用户把字号点回基线、缩放点回 ×1（或黑边贴合刚被关掉）时，算出来正好
     -- 等于 ASS 原始字号。此时写 `Fontsize=20` 是无效覆盖，还会把多 style 的
     -- 原始字号层级压平成单一值 —— 必须清掉，让样式表回到原生状态。
     if math.abs(factor - 1) < 0.001 then return nil end
     return string.format('Fontsize=%g', base_units * factor)
+end
+
+-- v1.0.11：把「下移 / 进黑边」折成 ASS Script Info 的 PlayResY 覆盖。
+-- 真机实测（force 模式同样成立）：PlayResY 360→200 让 \pos(320,60) 的
+-- 字幕从 y41..58 移到 y87..107；配合 Fontsize 补偿后字宽 x266..372 不变。
+-- 不写时（ratio==1）保持 ASS 原生坐标，绝不留残留。
+local function ass_playres_y_override()
+    if not ass_pos_shift_active() then return nil end
+    local ratio = ass_y_ratio()
+    if math.abs(ratio - 1) < 0.0005 then return nil end
+    local info = ass_style_info()
+    if not info or not info.playres_y then return nil end
+    return string.format('PlayResY=%g', info.playres_y / ratio)
 end
 
 -- 黑边贴合时按 ASS 原始字号估算「缩放=×1」时的字幕盒物理高度。
@@ -887,6 +981,10 @@ local function apply_style_channel(target_style)
     -- 用户依然要能放大定位字幕。
     local fontsize_override = ass_fontsize_override(target_style)
     if fontsize_override then want[#want + 1] = fontsize_override end
+    -- v1.0.11：Y 位移通道。与 Fontsize 同属 sub-ass-style-overrides，
+    -- 一写一清都由上面的 MANAGED_OVERRIDE_KEYS 统一托管。
+    local playres_override = ass_playres_y_override()
+    if playres_override then want[#want + 1] = playres_override end
     if runtime.override_all then
         if target_style.font then
             want[#want + 1] = 'FontName=' .. target_style.font
@@ -1209,11 +1307,32 @@ refresh_barfit = function()
         end
         return nil
     end
+    -- v1.0.11：真机实测 sub-margin-y 在 ASS 下是**死通道**（改 22→100，
+    -- \pos 字幕与普通对白像素都一字不差），所以内封 ASS 不能靠 margin_y
+    -- 进黑边。改由 PlayResY 覆盖把对白锚点整体推进下黑边：
+    --   盒底目标 = bar_top + (bar_h + 缩后盒高)/2
+    --   ratio    = 盒底目标 / 原始锚点比例（ass_anchor_ratio）
+    -- ratio 由 ass_y_ratio() 消费，Fontsize 同步补偿，字号不受影响。
+    -- 外挂字幕仍走原来的 sub-margin-y 分支，两条路互不干扰。
+    if ass_pos_shift_active() then
+        local anchor = o.ass_anchor_ratio
+        if type(anchor) ~= 'number' or anchor < 0.2 or anchor > 1.2 then
+            anchor = 0.94
+        end
+        local unit = ass_unit_px(img.h)
+            or ((baseline.size or mp.get_property_number('sub-font-size', 38))
+                * BAR_LINE_GAP * (img.h / 720))
+        local box_frac = unit * fit.scale / img.h
+        local target = (1 - bottom) + (bottom + box_frac) / 2
+        fit.y_ratio = clamp(target / anchor, 0.5, 2.0)
+        fit.anchor_target = target
+    end
     barfit = fit
     apply_all(false)
     nudge_reconfigure()   -- sub-margin-y / sub-scale 无 UPDATE flag，需重跑 configure_ass
     -- OSD 微扰会清掉左上角检测报告，补回来（沿用 flash_tl 已设好的 left/top 对齐）
-    if last_report_text then
+    -- v1.0.11：show_report=no 时别补，否则关掉的报告会被这条路径偷偷放回来。
+    if runtime.show_report and last_report_text then
         mp.commandv('show-text', last_report_text, o.report_ms or 6000)
     end
     return fit
@@ -1268,6 +1387,9 @@ local function set_pos(v, quiet)
     cur().pos_owned = true                       -- 用户显式设定 ⇒ 取得归属权
     local pushed = push_other_away(cur().pos)    -- 另一轨自动让位，避免重叠
     apply_all(false)
+    -- v1.0.11：PlayResY 覆盖变化要推动 configure_ass 重跑，否则 \pos 字幕
+    -- 会停在旧坐标系，用户又看到「点击下移没反应」。
+    if ass_pos_shift_active() then nudge_reconfigure() end
     save_state()
     if not quiet then
         local w = position_warning()
@@ -1276,10 +1398,13 @@ local function set_pos(v, quiet)
             text = text .. string.format('（%s已避让至 %d%%）',
                 is_sec() and '主字幕' or '次字幕', pushed)
         end
-        -- 用户已确认「保留定位，微调仅普通字幕」：内封 \pos 字幕不跟着动，
-        -- 必须明说，否则又会被当成「点击没反应」。
-        if ass_channel_active() then
-            text = text .. ' ⚠ 内封 \\pos 定位字幕保持原位（请用字号/缩放调整）'
+        -- 位移通道开启后 \pos 字幕会跟着动，明确回显比例；关掉时明说
+        -- 「保持原位」，避免再次被当成点击无效。
+        if ass_pos_shift_active() then
+            text = text .. string.format('（内封 \\pos 定位字幕同步位移 ×%.3f）',
+                ass_y_ratio())
+        elseif ass_channel_active() then
+            text = text .. ' ⚠ 内封 \\pos 定位字幕保持原位（请开启「定位字幕可下移」）'
         end
         flash(w and (text .. ' ⚠ ' .. w) or text)
     end
@@ -2098,7 +2223,12 @@ local function inspect_style()
 end
 
 -- 左上角消息（临时把 OSD 对齐设为 left/top，显示后还原）
+-- v1.0.11：show_report=no（conf）或菜单关掉后这里是**唯一出口**直接返回，
+-- 既不 show-text 也不碰 osd-align-*。检测/预设逻辑在外层照常跑完。
 local function flash_tl(text, ms)
+    if not runtime.show_report then return end
+    runtime.report_shown = (runtime.report_shown or 0) + 1
+    if publish_api_state then pcall(publish_api_state) end
     ms = ms or 6000
     local ax = mp.get_property('osd-align-x')
     local ay = mp.get_property('osd-align-y')
@@ -2305,12 +2435,12 @@ local function build_items()
     end
     items[#items + 1] = {
         title = string.format('上移 %d%%（微调）', o.nudge),
-        hint = '可连续点击', icon = 'arrow_upward', keep_open = true,
+        hint = '可连续点击 · 内封定位字幕同步', icon = 'arrow_upward', keep_open = true,
         value = 'script-message-to uosc_subtitle_style nudge ' .. (-o.nudge),
     }
     items[#items + 1] = {
         title = string.format('下移 %d%%（微调）', o.nudge),
-        hint = '可连续点击', icon = 'arrow_downward', keep_open = true,
+        hint = '可连续点击 · 内封定位字幕同步', icon = 'arrow_downward', keep_open = true,
         value = 'script-message-to uosc_subtitle_style nudge ' .. o.nudge,
     }
 
@@ -2549,9 +2679,11 @@ local function build_items()
     end
     items[#items + 1] = {
         title = '上下黑边内显示字幕',
-        hint = bar_hint .. (ass_channel_active()
-            and '（内封 \\pos 字幕按 ASS 原始字号缩进黑边）'
-            or '（\\pos 定位字幕受 mpv 限制保持原位）'),
+        hint = bar_hint .. (ass_pos_shift_active()
+            and '（内封 \\pos 字幕按 PlayResY 位移进下黑边）'
+            or (ass_channel_active()
+                and '（内封 \\pos 字幕只限缩、不位移）'
+                or '（\\pos 定位字幕受 mpv 限制保持原位）')),
         icon = runtime.bar_fit and 'check_box' or 'check_box_outline_blank',
         value = 'script-message-to uosc_subtitle_style letterbox-toggle',
         active = runtime.bar_fit,
@@ -2568,6 +2700,24 @@ local function build_items()
         icon = runtime.ass_fontsize and 'check_box' or 'check_box_outline_blank',
         value = 'script-message-to uosc_subtitle_style ass-fontsize-toggle',
         active = runtime.ass_fontsize,
+    }
+    items[#items + 1] = {
+        title = '内封定位字幕可下移',
+        hint = runtime.ass_pos_shift
+            and '已开启：\\pos 字幕跟随 1% 微调与黑边贴合（保留 ASS 定位）'
+            or '已关闭：\\pos 字幕保持原始定位（sub-margin-y 对它无效）',
+        icon = runtime.ass_pos_shift and 'check_box' or 'check_box_outline_blank',
+        value = 'script-message-to uosc_subtitle_style ass-pos-shift-toggle',
+        active = runtime.ass_pos_shift,
+    }
+    items[#items + 1] = {
+        title = '显示左上角检测报告',
+        hint = runtime.show_report
+            and '已开启：载入时显示采样/黑白预设/内封轨检查报告（可在 conf 用 show_report=no 永久关闭）'
+            or '已关闭：只执行检测与黑白预设，不弹左上角 OSD（conf: show_report=yes 恢复）',
+        icon = runtime.show_report and 'check_box' or 'check_box_outline_blank',
+        value = 'script-message-to uosc_subtitle_style report-toggle',
+        active = runtime.show_report,
     }
     items[#items + 1] = {
         title = '恢复默认', hint = '主/次位置 100% · 缩放 ×1.00 · 样式全原样', icon = 'undo',
@@ -2720,7 +2870,7 @@ mp.register_script_message('nudge', function(v)
     local before = cur().pos
     local target = clamp(before + n, POS_MIN, POS_MAX)
     -- 旧版把「已在 0% / 150% 边界」的点击喂给 clamp 后静默吞掉，用户看到的就是
-    -- 「下移 5% 点了没反应」。这里必须给出明确反馈。
+    -- 「点了下移没反应」。这里必须给出明确反馈（v1.0.11 起步长为 1%）。
     if math.abs(target - before) < 0.001 then
         flash(string.format('%s已在位置边界（%d%%，范围 %d~%d），无法继续%s',
             track_name(), before, POS_MIN, POS_MAX, n > 0 and '下移' or '上移'))
@@ -2769,6 +2919,25 @@ mp.register_script_message('ass-fontsize-toggle', function()
     apply_all(true, true)
     flash(runtime.ass_fontsize and '内封定位字幕缩放/字号通道：开（\\pos 字幕可缩放）'
         or '内封定位字幕缩放/字号通道：关（回到原生 sub-scale）')
+end)
+-- v1.0.11：垂直位移通道。关掉时 apply_all 会把 PlayResY 覆盖项从
+-- MANAGED_OVERRIDE_KEYS 里一并清掉，\pos 字幕回到 ASS 原始定位。
+mp.register_script_message('ass-pos-shift-toggle', function()
+    runtime.ass_pos_shift = not runtime.ass_pos_shift
+    apply_all(true, true)
+    flash(runtime.ass_pos_shift
+        and '内封定位字幕可下移：开（1% 微调与黑边贴合同步作用于 \\pos 字幕）'
+        or '内封定位字幕可下移：关（\\pos 字幕保持原始定位）')
+end)
+-- v1.0.11：左上角 OSD 消息开关。只管显示，检测 / 黑白预设 / 黑边贴合全部照跑。
+-- 用 flash()（屏幕底部居中）给一次性反馈，因为关闭后 flash_tl 不会再输出。
+mp.register_script_message('report-toggle', function()
+    runtime.show_report = not runtime.show_report
+    if publish_api_state then pcall(publish_api_state) end
+    flash(runtime.show_report
+        and '左上角检测报告：开（下一个文件载入时显示）'
+        or '左上角检测报告：关（检测与黑白预设仍照常执行）')
+    if refresh_menu then refresh_menu() end
 end)
 mp.register_script_message('bold', function(v)
     if v == 'on' or v == '1' or v == 'yes' then set_bold(true)
@@ -3037,7 +3206,9 @@ local API_CALLS = {
     ['preset-toggle-dual'] = true, ['preset-toggle-enabled'] = true,
     ['toggle-gray'] = true, ['toggle-all'] = true,
     ['letterbox-toggle'] = true, ['letterbox-refresh'] = true,
-    ['ass-fontsize-toggle'] = true, ['inspect'] = true,
+    ['ass-fontsize-toggle'] = true, ['ass-pos-shift-toggle'] = true,
+    ['report-toggle'] = true,
+    ['inspect'] = true,
     ['style-preset'] = true, ['reset'] = true, ['fix-override'] = true,
 }
 
@@ -3053,7 +3224,8 @@ local function api_snapshot()
     local bf
     if barfit then
         bf = {top = barfit.top, bottom = barfit.bottom,
-              scale = barfit.scale, margin_y = barfit.margin_y}
+              scale = barfit.scale, margin_y = barfit.margin_y,
+              y_ratio = barfit.y_ratio, anchor_target = barfit.anchor_target}
     end
     return {
         api_version = API_VERSION,
@@ -3062,10 +3234,15 @@ local function api_snapshot()
         main = track('main'), sec = track('sec'),
         barfit = bf, barfit_active = barfit_active(),
         ass_fontsize_active = ass_channel_active(),
+        ass_pos_shift_active = ass_pos_shift_active(),
+        ass_y_ratio = ass_y_ratio(),
         runtime = {override_all = runtime.override_all,
                    include_gray = runtime.include_gray,
                    bar_fit = runtime.bar_fit,
-                   ass_fontsize = runtime.ass_fontsize},
+                   ass_fontsize = runtime.ass_fontsize,
+                   ass_pos_shift = runtime.ass_pos_shift,
+                   show_report = runtime.show_report,
+                   report_shown = runtime.report_shown},
         preset = {enabled = preset.enabled, only_colored = preset.only_colored,
                   skip_dual = preset.skip_dual, color = preset.color,
                   outline_color = preset.outline_color,
