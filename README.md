@@ -364,7 +364,6 @@ python tools/sub-style-conf-verify.py                  # conf 静态门禁
 
 **全部脚本仓库链接、脚本仓库鸣谢与逐条归属勘误请见 [脚本仓库索引](docs/script-repositories.md)**；参考文档（hooke007 配置手册、mpv 官方手册等）也集中在同一份表格里。
 
-<a id="sec-15"></a>
 ## 🏷 关联标签
 
 <p align="center">
@@ -377,6 +376,7 @@ python tools/sub-style-conf-verify.py                  # conf 静态门禁
 
 > 以上为本仓库的 GitHub Topics（关联标签）；可在仓库首页 Topics 区或 `gh repo edit <owner>/<repo> --add-topic "..."` 维护。
 
+<a id="sec-15"></a>
 ## 🔗 关联仓库
 
 - [脚本仓库索引](docs/script-repositories.md) —— awujiana 维护仓库 + 上游 / 第三方，表格速查
