@@ -364,6 +364,18 @@ python tools/sub-style-conf-verify.py                  # conf 静态门禁
 
 **全部脚本仓库链接、脚本仓库鸣谢与逐条归属勘误请见 [脚本仓库索引](docs/script-repositories.md)**；参考文档（hooke007 配置手册、mpv 官方手册等）也集中在同一份表格里。
 
+## 🏷 关联标签
+
+<p align="center">
+  <a href="https://github.com/topics/mpv"><img alt="mpv" src="https://img.shields.io/badge/mpv-1f6feb?style=flat-square"></a>
+  <a href="https://github.com/topics/mpv-config"><img alt="mpv-config" src="https://img.shields.io/badge/mpv--config-1f6feb?style=flat-square"></a>
+  <a href="https://github.com/topics/lua"><img alt="lua" src="https://img.shields.io/badge/lua-1f6feb?style=flat-square"></a>
+  <a href="https://github.com/topics/osc"><img alt="osc" src="https://img.shields.io/badge/osc-1f6feb?style=flat-square"></a>
+  <a href="https://github.com/topics/shaders"><img alt="shaders" src="https://img.shields.io/badge/shaders-1f6feb?style=flat-square"></a>
+</p>
+
+> 以上为本仓库的 GitHub Topics（关联标签）；可在仓库首页 Topics 区或 `gh repo edit awujiana/mpv-bingshan --add-topic "..."` 维护。
+
 <a id="sec-15"></a>
 ## 🔗 关联仓库
 
