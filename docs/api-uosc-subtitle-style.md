@@ -3,6 +3,9 @@
 > 适用版本：`uosc_subtitle_style.lua` ≥ **1.0.10**，API 版本 `1.0.0`。
 > 面向「别的 mpv 脚本 / 自定义按键 / 外部工具」读取本脚本状态、触发其动作。
 > 架构背景见 [uosc-subtitle-style-architecture.md](uosc-subtitle-style-architecture.md)。
+> v1.0.11 起快照新增 `ass_pos_shift_active` / `ass_y_ratio` / `barfit.y_ratio` /
+> `barfit.anchor_target` / `runtime.{ass_pos_shift,show_report,report_shown}` 与两个白名单动作
+> （字段表里已逐项标注）；这些都是**可选附加字段**，旧调用方无需改动。
 
 ## 1. 设计边界
 
@@ -75,12 +78,17 @@ local raw = mp.get_property_native('user-data/uosc_subtitle_style/state')
 | `main.pos_owned` / `sec.pos_owned` | boolean | 位置是否由本脚本设定（否则脚本只观察不回写） |
 | `main.auto` / `sec.auto` | boolean | 当前样式是否由彩色检测自动套用的预设写入 |
 | `barfit_active` | boolean | 上下黑边贴合是否生效 |
-| `barfit` | object? | 生效时存在：`top` / `bottom`（占帧高比例）、`scale`（限缩倍率）、`margin_y`（整数 px） |
+| `barfit` | object? | 生效时存在：`top` / `bottom`（占帧高比例）、`scale`（限缩倍率）、`margin_y`（整数 px）、`y_ratio` / `anchor_target`（v1.0.11，内封 `\pos` 位移用，仅内封 ASS 时存在） |
 | `ass_fontsize_active` | boolean | 内封定位 ASS 的 `Fontsize` 通道是否激活（v1.0.9） |
+| `ass_pos_shift_active` | boolean | 内封定位 ASS 的 `PlayResY` 垂直位移通道是否激活（v1.0.11） |
+| `ass_y_ratio` | number | 当前应施加的 Y 坐标系放大倍率（1 = 不位移）；由黑边贴合或 1% 微调反解，见架构文档 §20.3 |
 | `runtime.override_all` | boolean | 运行时开关：样式覆盖所有轨 |
 | `runtime.include_gray` | boolean | 灰阶字幕是否纳入黑白预设 |
 | `runtime.bar_fit` | boolean | 黑边贴合开关 |
 | `runtime.ass_fontsize` | boolean | ASS 字号通道开关 |
+| `runtime.ass_pos_shift` | boolean | 内封定位 ASS 位移通道开关（v1.0.11） |
+| `runtime.show_report` | boolean | 左上角检测报告 OSD 开关（v1.0.11）；只关显示，不关检测/预设/黑边贴合 |
+| `runtime.report_shown` | number | 实际输出过几次左上角消息（v1.0.11）；供门禁验证开关是否生效 |
 | `preset.enabled` | boolean | 载入时自动套用预设 |
 | `preset.only_colored` | boolean | 仅彩色/灰色字幕套用 |
 | `preset.skip_dual` | boolean | 双语双轨跳过 |
@@ -142,9 +150,9 @@ script-message-to uosc_subtitle_style api my_script c1 call nudge -5
 
 - **`async=true`**：先回复「已派发」，动作随后执行。要观察结果请订阅 §2 的 `state` 广播，
   不要在收到回复时假设属性已经变化。
-- 白名单含 28 个入口（菜单/位置/缩放/字号/颜色/预设/黑边/检测等），
-  完整列表用 `list-actions` 动态获取；**刻意不含 `api` 与 `uosc-version`**，
-  防止外部脚本递归进入 API 通道或伪造 uosc 可用性。
+- 白名单含 30 个入口（菜单/位置/缩放/字号/颜色/预设/黑边/检测等，v1.0.11 新增
+  `ass-pos-shift-toggle` 与 `report-toggle`），完整列表用 `list-actions` 动态获取；
+  **刻意不含 `api` 与 `uosc-version`**，防止外部脚本递归进入 API 通道或伪造 uosc 可用性。
 - 参数原样转发，校验由原生入口负责。
 
 ### 错误码
@@ -187,11 +195,14 @@ request('get', 'main.pos')
 -- 读取完整状态
 request('get-state')
 
--- 触发「上移 5%（微调）」
-request('call', 'nudge', '-5')
+-- 触发「上移 1%（微调）」（v1.0.11 起菜单步长 1%，nudge 入口接受任意 ±%）
+request('call', 'nudge', '-1')
 
 -- 触发黑边重算
 request('call', 'letterbox-refresh')
+
+-- 关闭左上角检测报告（v1.0.11）；conf 用 show_report=no 可永久关闭
+request('call', 'report-toggle')
 ```
 
 `input.conf` 里也可以直接用（无需写脚本，但拿不到回复）：
@@ -207,7 +218,10 @@ F9 script-message-to uosc_subtitle_style api my_script k1 get-state
 |---|---|---|
 | 单测 | `tools/sub-style-test.lua` **T54**（20 条） | 注册/初始广播、`get-state` 形状与 id 回填、`get` 命中与未命中、非法 token 不回复、未知 action、白名单不含 `api`、`call` 转发参数、拒绝递归、状态变更自动刷新、原生入口不被覆盖 |
 | 单测 | `tools/sub-style-test.lua` **T55**（18 条） | 上下黑边双对白自适应：`get-state` 的 `barfit.scale/top/bottom` 必须与真实 `sub-scale` / 黑边比例一致 |
+| 单测 | `tools/sub-style-test.lua` **T56**（v1.0.11） | `get-state` 快照含 `ass_pos_shift_active` / `ass_y_ratio` / `barfit.y_ratio` / `barfit.anchor_target` |
+| 单测 | `tools/sub-style-test.lua` **T57**（v1.0.11） | `runtime.show_report` / `report_shown` 在快照内、`report-toggle` 在白名单可转发 |
 | 真机 E2E | `tools/sub-style-probe-api.lua` + `tools/sub-style-e2e.py` 第 5f 组 | 真实 mpv 下 `user-data` 可读、请求-响应可达、`call` 真正改变位置并刷新广播；两个脚本共 21 条断言 |
+| 真机 E2E | `tools/sub-style-e2e.py` 第 5h 组（v1.0.11） | `show_report=yes\|no` 两轮对照下用 `report_shown` 验证 API 状态与 `report-toggle` 双向生效 |
 | 语法/配置 | `lua-syntax-check.lua` / `sub-style-conf-verify.py` | 全量 Lua 语法、conf 键集合对齐 |
 
 ## 7. 版本与兼容承诺
