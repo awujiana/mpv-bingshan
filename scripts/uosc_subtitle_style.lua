@@ -1,5 +1,5 @@
 ---- uosc_subtitle_style.lua —— 内封字幕样式快速切换（uosc 菜单）
--- @version: 1.0.13
+-- @version: 1.0.14
 -- ⚠ 上面这行版本标记由 script-modules/updater.lua 读取，用来判定本地版本：
 --   本地 >= 远端时不更新、绝不降级。改动功能时请同步递增版本号，否则
 --   自更新会认为本地仍是旧版（或误判成同版本反复「已更新」）。
@@ -150,6 +150,11 @@ local o = {
     -- v1.0.11：左上角 OSD 消息总开关。no = 完全不输出检测报告 / 预设保存提示，
     -- 但样式检测与自动黑白预设**照常执行**（只是不显示），也不改 osd-align-*。
     show_report = true,
+    -- v1.0.14：保持原样（未套用预设）时，是否仍弹左上角 OSD。
+    --   常用片源多为标准白字黑边，每次切轨都刷「非彩色字幕，保持原样」很干扰观看，
+    --   故默认 no（静音）；设为 yes 才恢复显示。与 show_report 是「与」关系：
+    --   show_report=no 仍会在此之上彻底关闭所有左上角输出。
+    show_keep_original = false,
     inspect_retries = 15,     -- 检测重试次数：字幕未及时加载/片头无对白时，等第一句对白出现再检
     inspect_retry_delay = 1.0, -- 检测重试间隔（秒）
     preset_enabled = true,    -- 载入时默认套用预设样式
@@ -227,6 +232,8 @@ local runtime = {
     ass_fontsize = o.ass_fontsize and true or false,
     ass_pos_shift = o.ass_pos_shift and true or false,
     show_report = o.show_report and true or false,
+    show_keep_original = o.show_keep_original and true or false,
+    last_report_show = false,  -- 本次 run_inspect 是否真的弹了左上角报告（供 API / 门禁验证）
     report_shown = 0,   -- 实际输出过几次左上角消息；供 API / 真机门禁验证开关
 }
 
@@ -1389,7 +1396,8 @@ refresh_barfit = function()
     nudge_reconfigure()   -- sub-margin-y / sub-scale 无 UPDATE flag，需重跑 configure_ass
     -- OSD 微扰会清掉左上角检测报告，补回来（沿用 flash_tl 已设好的 left/top 对齐）
     -- v1.0.11：show_report=no 时别补，否则关掉的报告会被这条路径偷偷放回来。
-    if runtime.show_report and last_report_text then
+    -- v1.0.14：补回与否同样受「保持原样是否静音」约束（runtime.last_report_show）。
+    if runtime.last_report_show and last_report_text then
         mp.commandv('show-text', last_report_text, o.report_ms or 6000)
     end
     return fit
@@ -2434,7 +2442,12 @@ run_inspect = function(gen, allow_retry)
         last_report_text = nil
         report_clear_timer = nil
     end)
-    flash_tl(report, o.report_ms or 6000)
+    -- v1.0.14：保持原样（未套用预设）时，默认不弹左上角 OSD，避免常用片源
+    --   （标准白字黑边）每次切轨都刷「保持原样」干扰观看；conf 用
+    --   show_keep_original=yes 可恢复显示。套用了预设（applied）则照常显示。
+    --   与总开关 show_report 是「与」关系：show_report=no 仍会在此之上彻底关闭一切。
+    runtime.last_report_show = runtime.show_report and (applied or o.show_keep_original)
+    if runtime.last_report_show then flash_tl(report, o.report_ms or 6000) end
 end
 
 --------------------------------------------------------------------
@@ -3402,6 +3415,8 @@ local function api_snapshot()
                    ass_fontsize = runtime.ass_fontsize,
                    ass_pos_shift = runtime.ass_pos_shift,
                    show_report = runtime.show_report,
+                   show_keep_original = runtime.show_keep_original,
+                   last_report_show = runtime.last_report_show or false,
                    report_shown = runtime.report_shown},
         preset = {enabled = preset.enabled, only_colored = preset.only_colored,
                   skip_dual = preset.skip_dual, color = preset.color,

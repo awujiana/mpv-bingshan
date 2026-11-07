@@ -1147,6 +1147,27 @@ conf 新增 `show_report=yes`（`no` 永久关闭）。设计要点：
 
 > 本次 v1.0.10 → **v1.0.11**。
 
+### 20.7 `show_keep_original`：保持原样默认静音（v1.0.14）
+
+「保持原样」（标准白字黑边 / 双语不改色 / 灰度识别关闭等**未套用预设**的情形）原本也会走
+`flash_tl()` 弹左上角报告，常用片源切轨时频繁刷「非彩色字幕，保持原样」干扰观看。v1.0.14
+起该情形**默认静音**：
+
+- `o.show_keep_original`（conf `show_keep_original=no`）为 `false` 时，`run_inspect()` 末尾
+  把 `runtime.last_report_show` 置为 `runtime.show_report and (applied or o.show_keep_original)`；
+  保持原样（`applied=false`）且未开开关 ⇒ `last_report_show=false` ⇒ 不调 `flash_tl`，无 OSD。
+- 与总开关 `show_report` 是**「与」关系**：`show_report=no` 仍会在此之上彻底关闭一切左上角输出。
+- 套用了预设（`applied=true`，「已套用预设样式」）**不受**此开关影响，照常显示。
+- `refresh_barfit()` 里「OSD 微扰后补回报告」的路径同样以 `runtime.last_report_show` 为门槛，
+  静音时不会把关掉的报告偷偷放回来。
+- 门禁：`runtime.last_report_show` 供 API / 单测断言静音是否真的生效；`api_snapshot()` 暴露
+  `runtime.show_keep_original` / `runtime.last_report_show`。单测 T27d（默认静音）/
+  T27e（开启后显示）对照，T32/T37/T48/T59b/T59c 在保持原样场景下显式打开开关以验证报告路径。
+
+> 该改动只影响「保持原样」这一种报告的**显示**；样式检测、灰色/彩色识别、自动黑白预设、
+> 全内封轨检查、上下黑边贴合、位置/字号通道**全部照常执行**，与 `show_report` 的「只关显示」
+> 语义一致。
+
 ## 21. v1.0.12：切内封轨字号自动匹配、多行最下行基准与自动样式迁移
 
 ### 21.1 报障与根因：绝对覆盖值 × 可变坐标系

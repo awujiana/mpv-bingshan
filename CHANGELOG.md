@@ -8,16 +8,6 @@
 
 ## [未发布]
 
-### 同步 uosc_subtitle_style v1.0.12 / v1.0.13
-
-脚本 / conf / 两份文档 / 全套测试工具与独立公开仓库 [awujiana/uosc_subtitle_style](https://github.com/awujiana/uosc_subtitle_style) 保持字节一致（`cmp` 全 SAME）。
-
-- **v1.0.12**（此前未在本文件记录）：① 切内封轨后字号自动匹配——`Fontsize=` / `PlayResY=` 是按当前轨 ASS 头算出的绝对值，改为按各轨 `base_fontsize / playres_y` 反解补偿；② 多行对白只按最下行 `Default` 定字号，行数另计入整块盒高并钳住盒底；③ 「编辑目标」不再把自动适配的字体打回默认。夹具新增 `styles` / `extra_subs`，E2E 新增 **5i / 5j**，单测新增 **T58**。
-- **v1.0.13**：① 修复「有黑边的片子关掉后再开无黑边片子，字幕仍在黑边里、字号没回基线」——`sub-ass-style-overrides` 是解码器级共享列表，字幕解码器卸载不清，黑边写入的 `PlayResY` / `Fontsize` 是上一部片子的绝对值；现由 `end-file` 立即剔除本脚本托管项（保留用户 / 其它脚本写入的项），`file-loaded` 再复位遗留的 `inspect_scheduled` 与 `line_refit_timer`。② 修复「切换内封 / 外挂字幕（含切回原轨）不重新检测」——不再按轨 id 去重，任何 `sid` / `secondary-sid` 变化都先清 `auto=true` 的自动样式再重检。③ **左上角报告不再输出「内封字幕轨：共 N 条，已检查 M 条」**（切轨一律重检后该文案恒显示「已检查 0 条（当前外挂）」，属误导），逐轨进度改由 API `state.internal_tracks` 输出；API 版本仍为 `1.0.0`，只增可选只读字段。
-- 门禁：Lua 语法 `40 文件 OK 40 FAIL 0`（扫描根新增 `tools/`，真机探针纳入静态检查）；单测 373 → **406 条全绿**（新增 T58 / T59，改写 T52）；conf 静态门禁 `PASS fail=0`；真机 E2E 新增 **5k / 5l**，独立仓库 **275 PASS / 0 FAIL**（生产整合包按增量推算 282，本轮未重跑生产布局）。
-- 新增 `tools/sub-style-probe-reinspect.lua`（`MODE=tracks` / `MODE=files`）与 `tools/sub-style-probe-tracks.lua`（`MODE=switch` / `MODE=styles`）一并入库；架构文档新增 **§21 / §22**，API 文档 §3 补 `internal_tracks`。
-- README 的脚本版本、单测 / E2E 组数、`call` 白名单项数（28 → 30）同步更正。
-
 ### 新增（v1.0.11）
 
 - `uosc_subtitle_style.lua` **v1.0.11**：新增「内封定位字幕可下移」通道。真机逐通道实测确认带 `\pos` 的 explicit ASS 事件对 `sub-pos` / `sub-scale` / `sub-font-size` 全部豁免、`sub-margin-y` 在 ASS 下是死通道，唯一能改 Y 的是覆盖 ASS `[Script Info]` 的 `PlayResY`；据此把「上移/下移」与「上下黑边贴合」折成 `ratio` 写进 `PlayResY`，并用 `Fontsize` 除以 `ratio` 补回物理字号。对话轨道本身是 `\pos` 对白时也能整条推进下黑边、点下移即时生效。
@@ -25,6 +15,11 @@
 - **左上角报告可关闭**（用户新需求）：conf 新增 `show_report=yes`（设 `no` 永久关闭）、运行时菜单「显示左上角检测报告」及消息 `report-toggle`。`flash_tl()` 成为左上角 `show-text` 唯一出口，关闭时不输出、也不临时改 `osd-align-*`；检测/黑白预设/全内封轨检查/黑边贴合/位置字号通道全部照常执行。`runtime.report_shown` 计数供 API 与门禁验证。
 - 对外 API 快照新增 `ass_pos_shift_active` / `ass_y_ratio` / `barfit.y_ratio` / `barfit.anchor_target` / `runtime.ass_pos_shift` / `runtime.show_report` / `runtime.report_shown`；白名单新增 `ass-pos-shift-toggle` / `report-toggle`（共 30 个）。API 版本仍为 `1.0.0`（只增可选字段）。
 - `tools/sub-style-probe-shift.lua` + `tools/sub-style-e2e.py` 第 **5g**（`\pos` 对白进黑边 / 点下移生效 / 关通道复现原报障，15 条）与第 **5h**（`show_report=yes|no` 两轮对照、关闭零输出、`report-toggle` 双向生效，各 11 条）真机门禁；`tools/sub-style-test.lua` 新增 **T56**（1% 步长 / PlayResY / Fontsize 补偿 / 黑边反解 / API）与 **T57**（报告开关），单测 360 → **373 条全绿**。
+
+### 新增（v1.0.14）
+
+- `uosc_subtitle_style.lua` **v1.0.14**：「保持原样」（标准白字黑边 / 双语不改色 / 灰度识别关闭等**未套用预设**的情形）的左上角 OSD 报告**默认不再弹出**——常用片源多为标准白字黑边，每次切轨都刷「非彩色字幕，保持原样」很干扰观看。conf 新增 `show_keep_original=no`（设 `yes` 恢复显示），与总开关 `show_report` 是**「与」关系**（`show_report=no` 仍彻底关闭一切左上角输出）；套用了预设（「已套用预设样式」）仍照常显示。`runtime.last_report_show` 记录本次 `run_inspect` 是否真的弹了左上角报告，供 API 与门禁验证；`api_snapshot()` 暴露 `runtime.show_keep_original` / `runtime.last_report_show`。`refresh_barfit()` 的「OSD 微扰后补回报告」路径同样受此约束。
+- `tools/sub-style-test.lua` 新增 **T27d**（默认静音：保持原样不弹 OSD、套用预设仍显示）/ **T27e**（开启后显示），并修正 T32/T37/T48/T59b/T59c 在保持原样场景下需显式打开开关才能验证报告路径；单测 373 → **412 条全绿**。
 
 ### 改进
 

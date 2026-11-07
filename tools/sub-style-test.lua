@@ -1056,6 +1056,8 @@ set_tracks(false)
 env.vfs['C:/fake-config/white.ass'] = make_ass('&H00FFFFFF', '&H00000000')
 set_external_track('C:/fake-config/white.ass')
 env.props['sub-ass-override'] = 'scale'
+-- 该测试验证「保持原样」报告的*内容*，故显式打开 show_keep_original 让报告照常弹出
+env.opt_overrides.show_keep_original = true
 load_script()
 env.messages['inspect']()
 check('inspect-white-not-applied', env.props['sub-color'] == nil,
@@ -1074,6 +1076,8 @@ local restore17c = fresh_script_env()
 set_tracks(false)
 env.vfs['C:/fake-config/gray.ass'] = make_ass('&H008B8B8B', '&H00000000')
 set_external_track('C:/fake-config/gray.ass')
+-- 验证「保持原样」报告内容，打开 show_keep_original 让报告照常弹出
+env.opt_overrides.show_keep_original = true
 load_script()
 env.messages['inspect']()
 local rpt_g = last_showtext() or ''
@@ -1093,6 +1097,62 @@ env.messages['inspect']()
 check('inspect-gray-off-keeps-original',
     (last_showtext() or ''):find('保持原样', 1, true) ~= nil, last_showtext())
 restore17c()
+
+-- T27d / T27e 保持原样默认不弹 OSD（v1.0.14 用户诉求）
+-- 用全局 with_env / api_state 包裹，避免给主 chunk 增加 local（Lua 单 chunk 上限 200 局部变量）
+function with_env(fn)
+    local restore = fresh_script_env()
+    fn()
+    restore()
+end
+function api_state()
+    local ok, v = pcall(jdec, env.props['user-data/uosc_subtitle_style/state'] or '{}')
+    return ok and v or {}
+end
+
+-- 默认（show_keep_original=no）：保持原样不弹 OSD；套用了预设仍照常显示
+with_env(function()
+    set_tracks(false)
+    env.vfs['C:/fake-config/white.ass'] = make_ass('&H00FFFFFF', '&H00000000')
+    set_external_track('C:/fake-config/white.ass')
+    env.props['sub-ass-override'] = 'scale'
+    load_script()
+    env.messages['inspect']()
+    check('t27d-keep-original-suppressed-by-default',
+        #env.showtexts == 0, 'showtexts=' .. #env.showtexts
+        .. ' last=' .. tostring(last_showtext()))
+    check('t27d-api-last-report-show-false',
+        (api_state().runtime or {}).last_report_show == false,
+        tostring((api_state().runtime or {}).last_report_show))
+    check('t27d-api-show-keep-original-false',
+        (api_state().runtime or {}).show_keep_original == false,
+        tostring((api_state().runtime or {}).show_keep_original))
+    -- 换成彩色字幕重新检测：已套用预设仍照常显示（与 show_keep_original 无关）
+    env.showtexts = {}
+    env.vfs['C:/fake-config/colored.ass'] = make_ass('&H0000FFFF', '&H00FF0000')
+    set_external_track('C:/fake-config/colored.ass')
+    env.events['file-loaded']()
+    flush_timers()
+    check('t27d-applied-still-shows',
+        (last_showtext() or ''):find('已套用预设样式', 1, true) ~= nil, last_showtext())
+end)
+
+-- 开启 show_keep_original=yes：保持原样也会弹 OSD
+with_env(function()
+    set_tracks(false)
+    env.vfs['C:/fake-config/white.ass'] = make_ass('&H00FFFFFF', '&H00000000')
+    set_external_track('C:/fake-config/white.ass')
+    env.props['sub-ass-override'] = 'scale'
+    env.opt_overrides.show_keep_original = true
+    load_script()
+    env.messages['inspect']()
+    check('t27e-keep-original-shown-when-enabled',
+        (last_showtext() or ''):find('非彩色字幕，保持原样', 1, true) ~= nil,
+        last_showtext())
+    check('t27e-api-last-report-show-true',
+        (api_state().runtime or {}).last_report_show == true,
+        tostring((api_state().runtime or {}).last_report_show))
+end)
 
 -- T27b 白字 + 紫描边（外挂 ASS）：主色白非彩，但描边 #481081 是彩色 ⇒ 判彩色并转黑白。
 -- 回归：彩色判定曾只看主色，白字+彩描边被漏判成「非彩色」而不转黑白。
@@ -1286,6 +1346,8 @@ env.props['osd-align-x'] = 'center'
 env.props['osd-align-y'] = 'bottom'
 env.vfs['C:/fake-config/white3.ass'] = make_ass('&H00FFFFFF', '&H00000000')
 set_external_track('C:/fake-config/white3.ass')
+-- 该测试验证 flash_tl 的 OSD 对齐行为；白字内封属「保持原样」，需显式打开 show_keep_original 才弹 OSD
+env.opt_overrides.show_keep_original = true
 load_script()
 env.messages['inspect']()
 check('flash-tl-moves-align',
@@ -1360,6 +1422,8 @@ set_tracks(true)
 -- 彩色外挂字幕（正常会触发套用）；但有次字幕轨 ⇒ 跳过
 env.vfs['C:/fake-config/dual.ass'] = make_ass('&H0000FFFF', '&H00FF0000')
 set_external_track('C:/fake-config/dual.ass')
+-- 验证「双语保持原样」报告内容，打开 show_keep_original 让报告照常弹出
+env.opt_overrides.show_keep_original = true
 load_script()
 env.messages['inspect']()
 check('dual-colored-not-applied', env.props['sub-color'] == nil,
@@ -1430,6 +1494,8 @@ restore26()
 local restore27 = fresh_script_env()
 set_tracks(false)
 env.opt_overrides['report_ms'] = 1234
+-- 白字内封属「保持原样」，需显式打开 show_keep_original 才弹 OSD（验证 report_ms 时长）
+env.opt_overrides['show_keep_original'] = true
 env.vfs['C:/fake-config/white4.ass'] = make_ass('&H00FFFFFF', '&H00000000')
 set_external_track('C:/fake-config/white4.ass')
 load_script()
@@ -1450,6 +1516,8 @@ env.props['sub-ass-override'] = 'scale'   -- mpv 基线（load 时被 baseline �
 -- 文件1：彩色外挂 → inspect 自动套用预设
 env.vfs['C:/fake-config/leak-color.ass'] = make_ass('&H0000FFFF', '&H00FF0000')
 set_external_track('C:/fake-config/leak-color.ass')
+-- 验证「保持原样」报告内容，打开 show_keep_original 让报告照常弹出
+env.opt_overrides.show_keep_original = true
 load_script()
 env.messages['inspect']()
 flush_timers()
@@ -1887,6 +1955,8 @@ end
 
 -- T48 检测 → 布局：主轨贴下黑边(100)、次轨贴上黑边(0)、两轨同倍率限缩
 local restore48 = bars_env(12, 12, 128)
+-- 内封字幕属「保持原样」，需显式打开 show_keep_original 才弹 OSD（本测试验证 OSD 微扰后报告回填）
+env.opt_overrides.show_keep_original = true
 load_script()
 check('t48-letterbox-messages-registered',
     env.messages['letterbox-toggle'] ~= nil and env.messages['letterbox-refresh'] ~= nil)
@@ -3162,6 +3232,8 @@ local function setup59(sid)
     }
     env.vfs[EXT_COLORED] = ext_ass('&H000000FF')  -- #FF0000 彩色
     env.vfs[EXT_WHITE] = ext_ass('&H00FFFFFF')    -- #FFFFFF 标准白字
+    -- 验证「保持原样」报告内容（切到白字轨时），打开 show_keep_original 让报告照常弹出
+    env.opt_overrides.show_keep_original = true
     load_script()
     return r
 end
@@ -3202,6 +3274,8 @@ restore59[#restore59 + 1] = r59a
 
 -- ② 内封轨：切到另一条、再切回已检查过的那条，都要重新检测
 local r59b = bars_env(0, 0, 128)
+-- 内封字幕属「保持原样」，需显式打开 show_keep_original 才弹 OSD（本测试用 report_count 验证重新检测发生）
+env.opt_overrides.show_keep_original = true
 env.props['track-list'] = {{type = 'sub', id = 1}, {type = 'sub', id = 2}}
 env.props['sid'] = 1
 load_script()
@@ -3229,6 +3303,8 @@ local HDR59 = table.concat({
     'Style: Default,Microsoft YaHei,21,&H00FFFFFF,&H000000FF', '',
 }, '\n')
 local r59c = bars_env(12, 12, 128)
+-- 内封字幕属「保持原样」，需显式打开 show_keep_original 才弹 OSD（本测试用 report_count 验证切文件后重新检测）
+env.opt_overrides.show_keep_original = true
 env.props['sub-ass-extradata'] = HDR59
 env.props['sub-ass-style-overrides'] = nil
 load_script()

@@ -11,6 +11,10 @@
 > v1.0.13 起左上角 OSD 检测报告**不再**输出「内封字幕轨：共 N 条，已检查 M 条」——
 > 切轨已改为一律重新检测，按轨账本不再参与放行，该文案会让人误以为漏检。
 > 同一份进度信息改由 `state.internal_tracks` 结构化输出；**不新增 message、不改 API 版本**。
+>
+> v1.0.14 起「保持原样」的左上角 OSD 报告**默认静音**（conf `show_keep_original=no`）：
+> 套用预设的报告仍照常弹出，与总开关 `show_report` 是「与」关系；快照新增
+> `runtime.show_keep_original` / `runtime.last_report_show`（字段表已标注）。
 
 ## 1. 设计边界
 
@@ -100,6 +104,8 @@ local raw = mp.get_property_native('user-data/uosc_subtitle_style/state')
 | `runtime.ass_pos_shift` | boolean | 内封定位 ASS 位移通道开关（v1.0.11） |
 | `runtime.show_report` | boolean | 左上角检测报告 OSD 开关（v1.0.11）；只关显示，不关检测/预设/黑边贴合 |
 | `runtime.report_shown` | number | 实际输出过几次左上角消息（v1.0.11）；供门禁验证开关是否生效 |
+| `runtime.show_keep_original` | boolean | **v1.0.14**：保持原样（未套用预设）时是否仍弹左上角 OSD；来自 conf `show_keep_original`，与 `show_report` 做「与」 |
+| `runtime.last_report_show` | boolean | **v1.0.14**：本次 `run_inspect` 是否真的弹了左上角报告（保持原样且未开 `show_keep_original` 时为 false）；门禁据此断言静音生效 |
 | `preset.enabled` | boolean | 载入时自动套用预设 |
 | `preset.only_colored` | boolean | 仅彩色/灰色字幕套用 |
 | `preset.skip_dual` | boolean | 双语双轨跳过 |
