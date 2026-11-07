@@ -18,6 +18,9 @@ local ROOTS = {
     "scripts",
     "script-modules",
     "osc-style",
+    -- 真机探针同样是会被 mpv 加载的 Lua，语法错误只有跑到 E2E 才暴露；
+    -- 纳入静态门禁，让新增探针在提交前就被 loadstring 校验。
+    "tools",
 }
 
 -- 这些目录不检查：第三方依赖、缓存、版本控制

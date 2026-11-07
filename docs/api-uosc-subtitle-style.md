@@ -4,8 +4,13 @@
 > 面向「别的 mpv 脚本 / 自定义按键 / 外部工具」读取本脚本状态、触发其动作。
 > 架构背景见 [uosc-subtitle-style-architecture.md](uosc-subtitle-style-architecture.md)。
 > v1.0.11 起快照新增 `ass_pos_shift_active` / `ass_y_ratio` / `barfit.y_ratio` /
-> `barfit.anchor_target` / `runtime.{ass_pos_shift,show_report,report_shown}` 与两个白名单动作
-> （字段表里已逐项标注）；这些都是**可选附加字段**，旧调用方无需改动。
+> `barfit.anchor_target` / `runtime.{ass_pos_shift,show_report,report_shown}` 与两个白名单动作；
+> v1.0.13 起新增 `internal_tracks`（字段表里已逐项标注）；这些都是**可选附加字段**，
+> 旧调用方无需改动。
+>
+> v1.0.13 起左上角 OSD 检测报告**不再**输出「内封字幕轨：共 N 条，已检查 M 条」——
+> 切轨已改为一律重新检测，按轨账本不再参与放行，该文案会让人误以为漏检。
+> 同一份进度信息改由 `state.internal_tracks` 结构化输出；**不新增 message、不改 API 版本**。
 
 ## 1. 设计边界
 
@@ -82,6 +87,12 @@ local raw = mp.get_property_native('user-data/uosc_subtitle_style/state')
 | `ass_fontsize_active` | boolean | 内封定位 ASS 的 `Fontsize` 通道是否激活（v1.0.9） |
 | `ass_pos_shift_active` | boolean | 内封定位 ASS 的 `PlayResY` 垂直位移通道是否激活（v1.0.11） |
 | `ass_y_ratio` | number | 当前应施加的 Y 坐标系放大倍率（1 = 不位移）；由黑边贴合或 1% 微调反解，见架构文档 §20.3 |
+| `internal_tracks` | object | **v1.0.13**：内封轨检查进度；OSD 不再显示该文案，改由此字段输出 |
+| `internal_tracks.total` | number | 当前文件的内封字幕轨总数（不含外挂） |
+| `internal_tracks.checked` | number | 本文件内已成功检出过的内封轨数；v1.0.13 起**只作记录**，不影响切轨是否重检 |
+| `internal_tracks.current_id` | number? | 当前目标轨是内封时的轨 id；当前是外挂轨时省略 |
+| `internal_tracks.current_is_internal` | boolean | 当前目标轨是否为内封轨 |
+| `internal_tracks.pending` | string[] | 本文件尚未检出过的内封轨 id（字符串），例 `["2","5"]` |
 | `runtime.override_all` | boolean | 运行时开关：样式覆盖所有轨 |
 | `runtime.include_gray` | boolean | 灰阶字幕是否纳入黑白预设 |
 | `runtime.bar_fit` | boolean | 黑边贴合开关 |
@@ -222,6 +233,8 @@ F9 script-message-to uosc_subtitle_style api my_script k1 get-state
 | 单测 | `tools/sub-style-test.lua` **T57**（v1.0.11） | `runtime.show_report` / `report_shown` 在快照内、`report-toggle` 在白名单可转发 |
 | 真机 E2E | `tools/sub-style-probe-api.lua` + `tools/sub-style-e2e.py` 第 5f 组 | 真实 mpv 下 `user-data` 可读、请求-响应可达、`call` 真正改变位置并刷新广播；两个脚本共 21 条断言 |
 | 真机 E2E | `tools/sub-style-e2e.py` 第 5h 组（v1.0.11） | `show_report=yes\|no` 两轮对照下用 `report_shown` 验证 API 状态与 `report-toggle` 双向生效 |
+| 单测 | `tools/sub-style-test.lua` **T52**（v1.0.13） | OSD 报告不再含「内封字幕轨：…」；`internal_tracks.{total,checked,current_id,current_is_internal,pending}` 随切轨记账 |
+| 真机 E2E | `tools/sub-style-probe-reinspect.lua` + 第 5k 组（v1.0.13） | 真实 mpv 下 `internal_tracks` 可读、`total=1`，且切到外挂轨时 `current_is_internal=false` |
 | 语法/配置 | `lua-syntax-check.lua` / `sub-style-conf-verify.py` | 全量 Lua 语法、conf 键集合对齐 |
 
 ## 7. 版本与兼容承诺

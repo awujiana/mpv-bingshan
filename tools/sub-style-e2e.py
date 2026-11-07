@@ -32,6 +32,11 @@
 #   5h. v1.0.11 show_report：同一夹具起 yes / no 两轮互为对照组，验证 conf
 #       能完全关掉左上角 OSD、运行时 report-toggle 双向生效，而检测链与
 #       黑边贴合照常执行。
+#   5i/5j. v1.0.12 多内封轨字号自动匹配、多 Style 表下只按 Default 定字号。
+#   5k. v1.0.13 切轨重检：内封 + 两条外挂（彩色 / 标准白字）逐轨切换，切过去
+#       与切回来都必须重新检测、重新套用或清除自动预设。
+#   5l. v1.0.13 换片清场：有黑边 → 无黑边，end-file 清掉 PlayResY / Fontsize
+#       绝对覆盖，新文件黑边贴合关闭、边距 / 字号回到基线。
 #   ⚠ 第三方插件（.gitmodules 里的 submodule）自身的 Lua 报错由 lua_errors()
 #     按日志标签隔离，被测脚本与探针的任何报错仍然算 FAIL。
 # 用法（在 portable_config/ 下）：python tools/sub-style-e2e.py
@@ -91,6 +96,8 @@ MKV_FIXTURE = os.path.join(PORTABLE, 'tools', 'sub-style-mkv-fixture.py')
 PROBE_FONTSIZE = os.path.join(PORTABLE, 'tools', 'sub-style-probe-fontsize.lua')
 PROBE_API = os.path.join(PORTABLE, 'tools', 'sub-style-probe-api.lua')
 PROBE_SHIFT = os.path.join(PORTABLE, 'tools', 'sub-style-probe-shift.lua')
+PROBE_TRACKS = os.path.join(PORTABLE, 'tools', 'sub-style-probe-tracks.lua')
+PROBE_REINSPECT = os.path.join(PORTABLE, 'tools', 'sub-style-probe-reinspect.lua')
 STATE_FILE = os.path.join(PORTABLE, 'uosc-subtitle-style-state.json')
 PRESET_FILE = os.path.join(PORTABLE, 'uosc-subtitle-style-preset.json')
 FONT_CACHE = os.path.join(PORTABLE, 'uosc-subtitle-style-fonts.json')
@@ -956,6 +963,162 @@ def main():
             if expect == 'no' else
             ('sh-report-config-read-as-on', 'sh-report-on-actually-shows'))
         shift_asserts('sh-report-%s-' % expect, text, names)
+
+    # ---- 5i/5j. v1.0.12：拓展夹具的多场景真机回归 ----
+    # 5i 三条内封 ASS 轨（PlayResY / Default.Fontsize 各不相同）：切 sid 后
+    #    sub-ass-extradata 会变，Fontsize= / PlayResY= 绝对值必须逐轨重算，
+    #    归一化物理字号 Fontsize/PlayResY 必须恒定。
+    # 5j 单轨 + 多 Style（Default=20 / Sign=60）+ 带 \N 的多行对白 + 黑边：
+    #    黑边贴合的盒高只按 Default 估算，Fontsize 不被大标题样式拉偏。
+    SIGN_STYLE = ('Style: Sign,Arial,60,&H00FFFFFF,&H000000FF,&H00000000,'
+                  '&H00000000,0,0,0,0,100,100,0,0,1,2,0,2,10,10,10,1')
+    tr_switch = os.path.join(workdir, 'internal-three-tracks.mkv')
+    mkvmod.build(tr_switch, bars=24,
+                 events=('{\\pos(320,60)}TOPDIALOG',
+                         '{\\pos(320,338)}FIRSTLINE\\NSECONDLINE'),
+                 extra_subs=[
+                     {'fontsize': 48, 'playres_y': 720,
+                      'events': ('{\\pos(320,60)}TRACKB',)},
+                     {'fontsize': 14, 'playres_y': 240,
+                      'events': ('{\\pos(320,60)}TRACKC',)},
+                 ])
+    tr_styles = os.path.join(workdir, 'internal-multistyle.mkv')
+    mkvmod.build(tr_styles, bars=24,
+                 events=('{\\pos(320,60)}TOPDIALOG',
+                         '{\\pos(320,338)}FIRSTLINE\\NSECONDLINE'),
+                 styles=(SIGN_STYLE,))
+    check('tr-fixtures-built',
+          os.path.getsize(tr_switch) > 1024
+          and os.path.getsize(tr_styles) > 1024,
+          '%d / %d bytes' % (os.path.getsize(tr_switch),
+                             os.path.getsize(tr_styles)))
+
+    def run_tracks(tag, mode, fixture):
+        # 与 5g/5h 同理：残留 state 会让 ass_y_ratio() 误判成用户位移
+        for p in (STATE_FILE, PRESET_FILE):
+            if os.path.exists(p):
+                os.remove(p)
+        tlog = os.path.join(workdir, 'tracks-' + tag + '-log.txt')
+        tcmd = [
+            MPV, '--script=' + PROBE_TRACKS,
+            '--vo=gpu', '--ao=null', '--pause=yes',
+            '--image-display-duration=inf',
+            '--watch-later-dir=' + watch_dir,
+            '--save-position-on-quit=no', '--no-resume-playback',
+            '--msg-level=all=info', fixture,
+        ]
+        tenv = dict(env)
+        tenv['SUBSTYLE_TRACKS_MODE'] = mode
+        print('RUN(tracks-%s):' % tag, ' '.join(tcmd))
+        tproc = run_mpv(tcmd, env=tenv,
+                        stdout=open(tlog, 'w'), stderr=subprocess.STDOUT,
+                        timeout=240)
+        print('mpv(tracks-%s) exit=%d' % (tag, tproc.returncode))
+        return open(tlog, encoding='utf-8', errors='replace').read()
+
+    def tracks_asserts(prefix, text, expected):
+        rs = probe_of(text)
+        for name in expected:
+            if name not in rs:
+                check(prefix + name, False, 'missing in log')
+            else:
+                check(prefix + name, rs[name][0] == 'PASS', rs[name][1][:150])
+        sm = re.search(r'PROBE SUMMARY pass=(\d+) fail=(\d+)', text)
+        check(prefix + 'summary-all-ok', bool(sm) and sm.group(2) == '0',
+              sm.group(0) if sm else 'not found')
+        es, ig = lua_errors(text)
+        check(prefix + 'no-lua-errors', len(es) == 0,
+              '; '.join(es[:2]) + (' | 已忽略第三方插件报错 %d 行' % ig if ig else ''))
+
+    tracks_switch_expected = (
+        'tr-three-internal-sub-tracks',
+        'tr-track-a-header-readable', 'tr-track-a-writes-fontsize',
+        'tr-track-b-header-readable', 'tr-track-b-writes-fontsize',
+        'tr-track-b-header-changed', 'tr-track-b-fontsize-recomputed',
+        'tr-track-b-physical-size-matches',
+        'tr-track-c-header-readable', 'tr-track-c-writes-fontsize',
+        'tr-track-c-header-changed', 'tr-track-c-fontsize-recomputed',
+        'tr-track-c-physical-size-matches',
+        'tr-all-tracks-physical-size-constant', 'tr-track-a-restored',
+    )
+    tracks_asserts('tr-switch-', run_tracks('switch', 'switch', tr_switch),
+                   tracks_switch_expected)
+    tracks_styles_expected = (
+        'tr-multi-style-header', 'tr-multi-style-fontsize-uses-base',
+        'tr-multi-style-not-skewed-by-sign', 'tr-multi-style-playres-written',
+    )
+    tracks_asserts('tr-styles-', run_tracks('styles', 'styles', tr_styles),
+                   tracks_styles_expected)
+
+    # ---- 5k/5l. v1.0.13：切轨与换片都必须重新检测 / 清场 ----
+    # 5k 用「1 条内封 ASS + 2 条外挂 ASS」组合夹具，覆盖内封⇄外挂、彩色⇄白字、
+    #   切出去再切回来；判据用 API state 的 report_shown（每次成功检测 +1）与
+    #   main.auto / main.color，能区分「真的重跑了」和「样式恰好没变」。
+    # 5l 同会话 loadfile 换片，验证 end-file 清掉解码器级绝对覆盖、新文件黑边
+    #   贴合关闭、sub-margin-y / sub-font-size 回到基线。
+    ri_tracks = os.path.join(workdir, 'reinspect-tracks.mkv')
+    ri_bars = os.path.join(workdir, 'reinspect-bars.mkv')
+    ri_nobars = os.path.join(workdir, 'reinspect-nobars.mkv')
+    mkvmod.build(ri_tracks, bars=0)
+    mkvmod.build(ri_bars, bars=24)
+    mkvmod.build(ri_nobars, bars=0)
+    check('ri-fixtures-built',
+          all(os.path.getsize(p) > 1024
+              for p in (ri_tracks, ri_bars, ri_nobars)),
+          '%d / %d / %d bytes' % tuple(os.path.getsize(p) for p in
+                                       (ri_tracks, ri_bars, ri_nobars)))
+
+    def run_reinspect(tag, mode, fixture, extra_args=()):
+        # 残留 state / preset 会让自动预设与黑边判据从脏起点开始
+        for p in (STATE_FILE, PRESET_FILE):
+            if os.path.exists(p):
+                os.remove(p)
+        rlog = os.path.join(workdir, 'reinspect-' + tag + '-log.txt')
+        rcmd = [MPV, '--script=' + PROBE_REINSPECT]
+        rcmd += list(extra_args)
+        rcmd += [
+            '--vo=gpu', '--ao=null', '--pause=yes',
+            '--image-display-duration=inf',
+            '--watch-later-dir=' + watch_dir,
+            '--save-position-on-quit=no', '--no-resume-playback',
+            '--msg-level=all=info', fixture,
+        ]
+        renv = dict(env)
+        renv['SUBSTYLE_REINSPECT_MODE'] = mode
+        renv['SUBSTYLE_NOBARS_MKV'] = ri_nobars
+        print('RUN(reinspect-%s):' % tag, ' '.join(rcmd))
+        rproc = run_mpv(rcmd, env=renv,
+                        stdout=open(rlog, 'w'), stderr=subprocess.STDOUT,
+                        timeout=240)
+        print('mpv(reinspect-%s) exit=%d' % (tag, rproc.returncode))
+        return open(rlog, encoding='utf-8', errors='replace').read()
+
+    reinspect_tracks_expected = (
+        'ri-three-sub-tracks', 'ri-api-internal-tracks-field',
+        'ri-colored-first-reinspected', 'ri-colored-first-applies-preset',
+        'ri-api-current-track-is-external',
+        'ri-switch-to-white-reinspected',
+        'ri-switch-to-white-clears-auto-style',
+        'ri-switch-back-colored-reinspected',
+        'ri-switch-back-colored-reapplies',
+        'ri-switch-to-internal-clears-auto-style',
+        'ri-internal-back-to-colored-reinspected',
+        'ri-internal-back-to-colored-reapplies',
+    )
+    tracks_asserts('ri-switch-', run_reinspect(
+        'tracks', 'tracks', ri_tracks,
+        ('--sub-file=' + FIXTURE_COLORED, '--sub-file=' + FIXTURE_MAIN)),
+        reinspect_tracks_expected)
+
+    reinspect_files_expected = (
+        'ri-end-file-clears-ass-overrides',
+        'ri-first-barfit-active', 'ri-first-playres-written',
+        'ri-second-barfit-cleared', 'ri-second-no-playres-shift',
+        'ri-second-margin-restored', 'ri-second-fontsize-baseline',
+        'ri-second-ratio-neutral',
+    )
+    tracks_asserts('ri-files-', run_reinspect('files', 'files', ri_bars),
+                   reinspect_files_expected)
 
     # ---- 6. 清理测试产物 ----
     for p in (STATE_FILE, PRESET_FILE, FONT_CACHE):

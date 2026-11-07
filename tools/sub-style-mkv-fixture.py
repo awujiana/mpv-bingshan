@@ -103,8 +103,27 @@ def _block_group(track_no, text, read_order=None, duration_ms=60000):
 
 
 def build(path, bars=0, fontsize=DEFAULT_FONTSIZE, events=DEFAULT_EVENTS,
-          frame_color=(110, 110, 110)):
-    """写出 MKV，返回 path。bars>0 表示上下各留这么多像素的纯黑条。"""
+          frame_color=(110, 110, 110), styles=(), extra_subs=()):
+    """写出 MKV，返回 path。bars>0 表示上下各留这么多像素的纯黑条。
+
+    v1.0.12 把夹具从「单内封 ASS 轨」拓展成可组合的多场景夹具：
+
+    styles
+        额外的 ASS ``Style:`` 行（不含换行），追加进第一条轨的 CodecPrivate。
+        用来构造「Default=20 之外还有 Sign=60」的多样式表，验证字号基准
+        只取最下面一行对白的 base_fontsize，不被大标题 / signs 样式拉偏。
+    extra_subs
+        额外的**内封** ASS 轨列表，每项形如::
+
+            {'fontsize': int, 'playres_y': int,
+             'events': tuple[str, ...], 'styles': tuple[str, ...]}
+
+        轨道号从 3 依次递增。各轨 PlayResY / Default.Fontsize 可故意不同，
+        用来验证「切换内封轨后 Fontsize= / PlayResY= 绝对值必须重算」。
+    events
+        事件文本可带 ASS ``\\N``，用于构造多行对白；也可带 ``{\\pos(...)}``
+        构造 explicit 定位事件。所有既有调用不传新参数时行为完全不变。
+    """
     if not 0 <= bars < HEIGHT // 2:
         raise ValueError('bars out of range: %r' % (bars,))
 
@@ -119,7 +138,13 @@ def build(path, bars=0, fontsize=DEFAULT_FONTSIZE, events=DEFAULT_EVENTS,
     ])
     ebml = _el('1A45DFA3', header)
 
-    ass_header = ASS_HEADER_TMPL.format(playres_y=HEIGHT, fontsize=fontsize)
+    def make_header(pry, fs, extra_styles):
+        head = ASS_HEADER_TMPL.format(playres_y=pry, fontsize=fs)
+        for line in extra_styles:
+            head += line + '\n'
+        return head
+
+    ass_header = make_header(HEIGHT, fontsize, styles)
     video_track = b''.join([
         _u('D7', 1),                   # TrackNumber
         _u('73C5', 2),                 # TrackUID
@@ -140,7 +165,20 @@ def build(path, bars=0, fontsize=DEFAULT_FONTSIZE, events=DEFAULT_EVENTS,
         _s('4D80', 'sub-style-e2e'),
         _s('5741', 'sub-style-e2e'),
     ])
-    tracks = _el('1654AE6B', _el('AE', video_track) + _el('AE', sub_track))
+    sub_tracks = b''
+    for i, spec in enumerate(extra_subs):
+        sub_tracks += _el('AE', b''.join([
+            _u('D7', 3 + i),               # TrackNumber
+            _u('73C5', 4 + i),             # TrackUID
+            _u('83', 17),                  # TrackType=subtitle
+            _s('86', 'S_TEXT/ASS'),
+            _s('63A2', make_header(
+                spec.get('playres_y', HEIGHT),
+                spec.get('fontsize', DEFAULT_FONTSIZE),
+                spec.get('styles') or ())),
+        ]))
+    tracks = _el('1654AE6B',
+                 _el('AE', video_track) + _el('AE', sub_track) + sub_tracks)
 
     frame = Image.new('RGB', (WIDTH, HEIGHT), (0, 0, 0))
     if bars:
@@ -153,6 +191,9 @@ def build(path, bars=0, fontsize=DEFAULT_FONTSIZE, events=DEFAULT_EVENTS,
     blocks = [_block_group(1, buf.getvalue())]
     for i, text in enumerate(events):
         blocks.append(_block_group(2, text, read_order=i))
+    for j, spec in enumerate(extra_subs):
+        for i, text in enumerate(spec.get('events') or ()):
+            blocks.append(_block_group(3 + j, text, read_order=i))
     cluster = _el('1F43B675', _u('E7', 0) + b''.join(blocks))
 
     # Segment 用 8 字节 unknown size，省得回填长度；mpv/ffmpeg 都接受。

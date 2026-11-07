@@ -2050,39 +2050,62 @@ end
 local function flush_all52()
     for _ = 1, 4 do flush_timers() end
 end
+local function api52()
+    local ok, v = pcall(jdec, env.props['user-data/uosc_subtitle_style/state'] or '{}')
+    return ok and v or {}
+end
+local function it52()
+    local a = api52()
+    return type(a.internal_tracks) == 'table' and a.internal_tracks or {}
+end
 
--- ① 首检：关掉灰色识别，内封全量规则仍然套用；报告列出所有内封轨
+-- ① 首检：关掉灰色识别，内封全量规则仍然套用。
+--    v1.0.13：逐轨进度不再进左上角 OSD（切轨改为一律重检后该文案会误导），
+--    改由 API state 的 internal_tracks 字段结构化输出。
 local r52a = setup52()
 env.messages['toggle-gray']()
 env.events['file-loaded']()
 flush_all52()
 local report52 = last_showtext() or ''
-check('t52-report-lists-all-internal-tracks',
-    report52:find('内封字幕轨：共 2 条', 1, true) ~= nil, report52)
-check('t52-report-shows-checked-count',
-    report52:find('已检查 1 条', 1, true) ~= nil, report52)
-check('t52-report-shows-pending-tracks',
-    report52:find('待检查 2', 1, true) ~= nil, report52)
+local it52a = it52()
+check('t52-report-no-longer-lists-internal-progress',
+    report52:find('内封字幕轨：', 1, true) == nil, report52)
+check('t52-api-lists-all-internal-tracks',
+    it52a.total == 2, jenc(it52a))
+check('t52-api-shows-checked-count',
+    it52a.checked == 1, tostring(it52a.checked))
+check('t52-api-shows-pending-tracks',
+    type(it52a.pending) == 'table' and #it52a.pending == 1
+    and it52a.pending[1] == '2', jenc(it52a.pending or {}))
+check('t52-api-current-track-is-internal',
+    it52a.current_is_internal == true and it52a.current_id == 1,
+    jenc(it52a))
 check('t52-internal-applies-with-gray-off',
     env.props['sub-color'] == '#FFFFFF', tostring(env.props['sub-color']))
 check('t52-internal-report-applied',
     report52:find('已套用预设样式', 1, true) ~= nil, report52)
--- ② 切到另一条内封轨 ⇒ 重新检测并记账
+-- ② 切到另一条内封轨 ⇒ 重新检测并记账（仍走 API，不回 OSD）
 local before52 = #env.showtexts
 fire_prop('sid', 2)
 flush_all52()
 check('t52-switch-sid-triggers-reinspect', #env.showtexts > before52,
     tostring(#env.showtexts - before52))
 local report52b = last_showtext() or ''
-check('t52-second-internal-track-checked',
-    report52b:find('已检查 2 条', 1, true) ~= nil, report52b)
-check('t52-no-pending-after-all-checked',
-    report52b:find('待检查', 1, true) == nil, report52b)
--- ③ 切回已检查过的轨不重复检测
+local it52b = it52()
+check('t52-second-internal-track-checked-api',
+    it52b.checked == 2, jenc(it52b))
+check('t52-no-pending-after-all-checked-api',
+    type(it52b.pending) == 'table' and #it52b.pending == 0,
+    jenc(it52b.pending or {}))
+check('t52-second-report-still-clean',
+    report52b:find('内封字幕轨：', 1, true) == nil, report52b)
+-- ③ v1.0.13：切回已检查过的轨**也要**重新检测。
+--    旧版按「轨 id 是否见过」跳过，切回来时自动预设已被上一条轨清掉，
+--    彩色（非黑白）字幕就原样冒出来了。用户明确要求切换回去也检查。
 local before52c = #env.showtexts
 fire_prop('sid', 1)
 flush_all52()
-check('t52-revisited-track-no-reinspect', #env.showtexts == before52c,
+check('t52-revisited-track-reinspects', #env.showtexts > before52c,
     tostring(#env.showtexts - before52c))
 restore52[#restore52 + 1] = r52a
 
@@ -2906,6 +2929,342 @@ check('t57-api-call-report-toggle', fwd57 ~= nil
 r57d()
 end
 run_t57()
+
+--------------------------------------------------------------------
+-- T58：v1.0.12 切内封轨自动匹配字号 / 多行按最下行基准 / 编辑目标不重置自动样式
+--
+-- 写进 sub-ass-style-overrides 的 Fontsize= / PlayResY= 是**绝对值**，按当前轨
+-- 的 PlayResY 与 Default.Fontsize 算出。切换内封轨后 ASS 头变了，旧绝对值会把
+-- 上一条轨的物理字号带到新轨（样式对、黑边也对，就是大小不匹配）。
+-- 物理字号（归一化到帧高）= Fontsize / PlayResY。
+--------------------------------------------------------------------
+function run_t58()
+local restore58 = {}
+
+local function ass_header(pry, default_fs, extra)
+    local lines = {
+        '[Script Info]', 'ScriptType: v4.00+', 'PlayResX: 384',
+        'PlayResY: ' .. tostring(pry), '', '[V4+ Styles]',
+        'Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour',
+        'Style: Default,Microsoft YaHei,' .. tostring(default_fs)
+            .. ',&H00FFFFFF,&H000000FF',
+    }
+    for _, s in ipairs(extra or {}) do lines[#lines + 1] = s end
+    lines[#lines + 1] = ''
+    return table.concat(lines, '\n')
+end
+
+local function setup58(header, saved_state)
+    local r = fresh_script_env()
+    env.opt_overrides = {}
+    set_tracks(true)
+    env.props['sub-font-size'] = 38
+    env.props['sub-ass-style-overrides'] = nil
+    env.props['sub-ass-extradata'] = header
+    env.props['sid'] = 1
+    env.props['track-list'] = {{type = 'sub', id = 1}, {type = 'sub', id = 2}}
+    if saved_state then env.vfs[STATE_PATH] = jenc(saved_state) end
+    load_script()
+    return r
+end
+
+local function raw_override58(key)
+    for _, e in ipairs(env.props['sub-ass-style-overrides'] or {}) do
+        local v = e:match('^' .. key .. '=(.+)$')
+        if v then return v end
+    end
+    return nil
+end
+local function fontsize58() return tonumber(raw_override58('Fontsize')) end
+local function playres58() return tonumber(raw_override58('PlayResY')) end
+local function ratio58(pry)
+    local p = playres58()
+    return p and p > 0 and (pry / p) or 1
+end
+
+local A = ass_header(288, 21)   -- u_A = 21/288 = 0.0729
+local B = ass_header(720, 40)   -- u_B = 40/720 = 0.0556（另一条轨，字号占比不同）
+
+-- ① 切轨后物理字号保持一致，且绝对覆盖值确实被重算（不是照抄）
+local r58a = setup58(A)
+env.messages['scale']('1.5')
+local fs_a = fontsize58()
+check('t58-track-a-baseline-fontsize',
+    fs_a ~= nil and math.abs(fs_a - 31.5) < 0.01,
+    'Fontsize=' .. tostring(fs_a))
+fire_prop('sub-ass-extradata', A)   -- 登记本文件首个 ASS 头（不触发重算）
+fire_prop('sub-ass-extradata', B)   -- 切轨 → 重算绝对覆盖
+local fs_b = fontsize58()
+check('t58-track-switch-recomputes-absolute-fontsize',
+    fs_a ~= nil and fs_b ~= nil and math.abs(fs_b - fs_a) > 1,
+    string.format('A=%s B=%s', tostring(fs_a), tostring(fs_b)))
+check('t58-track-switch-physical-size-matches',
+    fs_a ~= nil and fs_b ~= nil
+    and math.abs(fs_b / 720 - fs_a / 288) < 0.0005,
+    string.format('physA=%.6f physB=%.6f',
+        (fs_a or 0) / 288, (fs_b or 0) / 720))
+-- 切回原轨应还原
+fire_prop('sub-ass-extradata', A)
+check('t58-track-switch-back-restores',
+    math.abs((fontsize58() or 0) - (fs_a or 0)) < 0.01,
+    'Fontsize=' .. tostring(fontsize58()))
+-- 第三条轨（PlayResY=240 / Default=14）也必须落到同一个物理字号
+local D = ass_header(240, 14)
+fire_prop('sub-ass-extradata', D)
+local fs_d = fontsize58()
+check('t58-track-c-physical-size-matches',
+    fs_d ~= nil and math.abs(fs_d / 240 - fs_a / 288) < 0.0005,
+    string.format('physA=%.6f physC=%.6f',
+        (fs_a or 0) / 288, (fs_d or 0) / 240))
+-- ② 新文件重置 per-file 参照：从新轨自己的字号占比起，不沿用上个文件
+fire_prop('sub-ass-extradata', B)
+env.events['file-loaded']()
+check('t58-per-file-ledger-reset',
+    math.abs((fontsize58() or 0) - 60) < 0.01,
+    'Fontsize=' .. tostring(fontsize58()))
+restore58[#restore58 + 1] = r58a
+
+-- ③ 只按最下面一行（Default）匹配字号：Sign 样式字号大 3 倍也不能拉偏盒高
+--    unit = base 21 × 1.2 × (200/288) = 17.5；usable = 200×0.06×0.9 = 10.8
+--    ⇒ scale = 0.617；若误用 max_fontsize 60 ⇒ scale = 0.216。
+local C = ass_header(288, 21,
+    {'Style: Sign,WenQuanYi Micro Hei,60,&H00FFFFFF,&H000000FF'})
+local r58c = bars_env(12, 12, 128)
+env.props['sub-ass-extradata'] = C
+env.props['sub-font-size'] = 38
+load_script()
+env.events['file-loaded']()
+flush_timers()
+local scale_single = (fontsize58() or 0) * ratio58(288) / 21
+check('t58-multiline-uses-base-fontsize-not-max',
+    math.abs(scale_single - 0.617) < 0.02,
+    string.format('scale=%.4f Fontsize=%s ratio=%.4f',
+        scale_single, tostring(fontsize58()), ratio58(288)))
+local target_single = ratio58(288) * 0.94
+-- ④ 出现两行对白后按整块盒高重算：字号限缩约一半，锚点不被往下推
+fire_prop('sub-text', '第一行\\N第二行')
+flush_timers()
+local scale_multi = (fontsize58() or 0) * ratio58(288) / 21
+check('t58-multiline-shrinks-whole-box',
+    scale_multi > 0 and scale_multi < scale_single * 0.6,
+    string.format('single=%.4f multi=%.4f', scale_single, scale_multi))
+local target_multi = ratio58(288) * 0.94
+check('t58-multiline-box-stays-inside-frame',
+    target_multi > 0 and target_multi < 1
+    and target_multi <= target_single + 0.002,
+    string.format('target_single=%.4f target_multi=%.4f',
+        target_single, target_multi))
+-- ④b 备用文本通道：真机实测图片型视频 + 内封 ASS 的 sub-text / sub-text-ass
+--    都可恒为 nil，脚本另挂了 sub-text-ass / secondary-sub-text 两路观察器。
+--    这里验证任一路可用时行数同样能进整块盒高（3 行 / 4 行继续限缩）。
+fire_prop('sub-text-ass', '一\\N二\\N三')
+flush_timers()
+local scale_triple = (fontsize58() or 0) * ratio58(288) / 21
+check('t58-backup-sub-text-ass-counts-lines',
+    scale_triple > 0 and scale_triple < scale_multi * 0.75,
+    string.format('multi=%.4f triple=%.4f', scale_multi, scale_triple))
+fire_prop('secondary-sub-text', '一\\N二\\N三\\N四')
+flush_timers()
+local scale_quad = (fontsize58() or 0) * ratio58(288) / 21
+check('t58-backup-secondary-sub-text-counts-lines',
+    scale_quad > 0 and scale_quad < scale_triple * 0.85,
+    string.format('triple=%.4f quad=%.4f', scale_triple, scale_quad))
+restore58[#restore58 + 1] = r58c
+
+-- ⑤ 编辑目标切换不能把自动适配的字体打回 baseline（FontName 会被移出 overrides）
+local r58e = setup58(A, {
+    version = 2,
+    main = {pos = 100, scale = 1, font = 'Microsoft YaHei', size = 42,
+            color = '#FFFFFF', auto = true},
+    sec = {pos = 5, scale = 1},
+    target = 'main',
+})
+local font_before = raw_override58('FontName')
+local size_before = env.props['sub-font-size']
+env.messages['target']('sec')
+check('t58-switch-target-keeps-auto-font',
+    font_before ~= nil and raw_override58('FontName') == font_before,
+    string.format('before=%s after=%s',
+        tostring(font_before), tostring(raw_override58('FontName'))))
+check('t58-switch-target-keeps-auto-size',
+    math.abs((env.props['sub-font-size'] or 0) - (size_before or 0)) < 0.01,
+    string.format('before=%s after=%s',
+        tostring(size_before), tostring(env.props['sub-font-size'])))
+check('t58-switch-target-propagates-auto-flag',
+    (env.vfs[STATE_PATH] or ''):find('"auto":true', 1, true) ~= nil,
+    env.vfs[STATE_PATH])
+restore58[#restore58 + 1] = r58e
+
+-- ⑥ 对照：另一轨已有用户手动样式时仍用该轨自己的样式（不覆盖用户选择）
+local r58f = setup58(A, {
+    version = 2,
+    main = {pos = 100, scale = 1, font = 'Font A', size = 42, auto = true},
+    sec = {pos = 5, scale = 1, font = 'Font B', size = 30},
+    target = 'main',
+})
+env.messages['target']('sec')
+check('t58-switch-target-respects-manual-other-track',
+    raw_override58('FontName') == 'Font B',
+    tostring(raw_override58('FontName')))
+restore58[#restore58 + 1] = r58f
+
+for i = #restore58, 1, -1 do restore58[i]() end
+end
+run_t58()
+
+--------------------------------------------------------------------
+-- T59 文件 / 字幕轨变化后必须重新检测（v1.0.13）
+--   ① 外挂彩色 → 外挂标准白字 → 切回彩色：每次都要重新跑检测；
+--   ② 内封轨 A → B → A：切回「已检查过」的轨也要重新跑；
+--   ③ 有黑边文件 → end-file → 无黑边文件：黑边位移 / 限缩覆盖不残留。
+--------------------------------------------------------------------
+function run_t59()
+local restore59 = {}
+local EXT_COLORED = 'C:/fake-config/diag-colored.ass'
+local EXT_WHITE = 'C:/fake-config/diag-white.ass'
+
+local function ext_ass(color)
+    return '[Script Info]\nScriptType: v4.00+\n\n[V4+ Styles]\n'
+        .. 'Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour\n'
+        .. 'Style: Default,Arial,40,' .. color
+        .. ',&H000000FF,&H00000000\n\n[Events]\n'
+end
+
+local function raw_override59(key)
+    for _, e in ipairs(env.props['sub-ass-style-overrides'] or {}) do
+        local v = e:match('^' .. key .. '=(.+)$')
+        if v then return v end
+    end
+    return nil
+end
+
+local function report_count()
+    local n = 0
+    for _, t in ipairs(env.showtexts) do
+        if t and (t:find('已套用预设样式', 1, true)
+                  or t:find('保持原样', 1, true)) then n = n + 1 end
+    end
+    return n
+end
+
+local function setup59(sid)
+    local r = fresh_script_env()
+    set_tracks(false)
+    env.props['sid'] = sid
+    env.props['sub-text'] = '对白'
+    env.props['sub-color'] = '#FFFFFFFF'
+    env.props['sub-ass-override'] = 'scale'
+    env.props['sub-font-size'] = 38
+    env.props['track-list'] = {
+        {type = 'sub', id = 1, external = false},
+        {type = 'sub', id = 2, external = true, ['external-filename'] = EXT_COLORED},
+        {type = 'sub', id = 3, external = true, ['external-filename'] = EXT_WHITE},
+    }
+    env.vfs[EXT_COLORED] = ext_ass('&H000000FF')  -- #FF0000 彩色
+    env.vfs[EXT_WHITE] = ext_ass('&H00FFFFFF')    -- #FFFFFF 标准白字
+    load_script()
+    return r
+end
+
+-- ① 外挂轨：切过去、切回来都要重新检测
+local r59a = setup59(2)
+env.events['file-loaded']()
+flush_timers(); flush_timers()
+check('t59a-initial-colored-applies-preset',
+    env.props['sub-color'] == '#FFFFFF'
+        and env.props['sub-ass-override'] == 'force',
+    string.format('color=%s override=%s', tostring(env.props['sub-color']),
+        tostring(env.props['sub-ass-override'])))
+check('t59a-initial-report', report_count() >= 1, 'reports=' .. report_count())
+
+env.showtexts = {}
+fire_prop('sid', 3)
+flush_timers(); flush_timers()
+check('t59a-switch-to-white-reinspects', report_count() >= 1,
+    'reports=' .. report_count())
+check('t59a-switch-to-white-clears-auto-style',
+    env.props['sub-color'] == '#FFFFFFFF'
+        and env.props['sub-ass-override'] == 'scale',
+    string.format('color=%s override=%s', tostring(env.props['sub-color']),
+        tostring(env.props['sub-ass-override'])))
+
+env.showtexts = {}
+fire_prop('sid', 2)
+flush_timers(); flush_timers()
+check('t59a-switch-back-reinspects', report_count() >= 1,
+    'reports=' .. report_count())
+check('t59a-switch-back-reapplies-preset',
+    env.props['sub-color'] == '#FFFFFF'
+        and env.props['sub-ass-override'] == 'force',
+    string.format('color=%s override=%s', tostring(env.props['sub-color']),
+        tostring(env.props['sub-ass-override'])))
+restore59[#restore59 + 1] = r59a
+
+-- ② 内封轨：切到另一条、再切回已检查过的那条，都要重新检测
+local r59b = bars_env(0, 0, 128)
+env.props['track-list'] = {{type = 'sub', id = 1}, {type = 'sub', id = 2}}
+env.props['sid'] = 1
+load_script()
+env.events['file-loaded']()
+flush_timers(); flush_timers()
+check('t59b-initial-internal-inspected', report_count() >= 1,
+    'reports=' .. report_count())
+env.showtexts = {}
+fire_prop('sid', 2)
+flush_timers(); flush_timers()
+check('t59b-internal-switch-reinspects', report_count() >= 1,
+    'reports=' .. report_count())
+env.showtexts = {}
+fire_prop('sid', 1)
+flush_timers(); flush_timers()
+check('t59b-internal-switch-back-reinspects', report_count() >= 1,
+    'reports=' .. report_count())
+restore59[#restore59 + 1] = r59b
+
+-- ③ 有黑边 → end-file → 无黑边：黑边位移 / 字号覆盖不跨文件残留
+local HDR59 = table.concat({
+    '[Script Info]', 'ScriptType: v4.00+', 'PlayResX: 384',
+    'PlayResY: 288', '', '[V4+ Styles]',
+    'Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour',
+    'Style: Default,Microsoft YaHei,21,&H00FFFFFF,&H000000FF', '',
+}, '\n')
+local r59c = bars_env(12, 12, 128)
+env.props['sub-ass-extradata'] = HDR59
+env.props['sub-ass-style-overrides'] = nil
+load_script()
+env.events['file-loaded']()
+flush_timers(); flush_timers()
+check('t59c-first-file-barfit-active',
+    env.props['sub-margin-y'] ~= 34 and raw_override59('PlayResY') ~= nil,
+    string.format('margin=%s PlayResY=%s', tostring(env.props['sub-margin-y']),
+        tostring(raw_override59('PlayResY'))))
+env.raw_shots = {
+    video = barframe48(0, 0, 128, false),
+    subtitles = barframe48(0, 0, 128, true),
+}
+env.showtexts = {}
+env.events['end-file']()
+check('t59c-end-file-clears-ass-overrides',
+    raw_override59('PlayResY') == nil and raw_override59('Fontsize') == nil,
+    string.format('PlayResY=%s Fontsize=%s',
+        tostring(raw_override59('PlayResY')),
+        tostring(raw_override59('Fontsize'))))
+env.events['file-loaded']()
+flush_timers(); flush_timers()
+check('t59c-second-file-margin-restored', env.props['sub-margin-y'] == 34,
+    tostring(env.props['sub-margin-y']))
+check('t59c-second-file-no-playres-shift',
+    raw_override59('PlayResY') == nil, tostring(raw_override59('PlayResY')))
+check('t59c-second-file-fontsize-baseline',
+    math.abs((env.props['sub-font-size'] or 0) - 50) < 0.01,
+    tostring(env.props['sub-font-size']))
+check('t59c-second-file-reinspects', report_count() >= 1,
+    'reports=' .. report_count())
+restore59[#restore59 + 1] = r59c
+
+for i = #restore59, 1, -1 do restore59[i]() end
+end
+run_t59()
 
 for _, r in ipairs(restore50) do r() end
 restore51(); restore49(); restore48()

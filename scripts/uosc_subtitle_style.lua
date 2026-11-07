@@ -1,5 +1,5 @@
 ---- uosc_subtitle_style.lua —— 内封字幕样式快速切换（uosc 菜单）
--- @version: 1.0.11
+-- @version: 1.0.13
 -- ⚠ 上面这行版本标记由 script-modules/updater.lua 读取，用来判定本地版本：
 --   本地 >= 远端时不更新、绝不降级。改动功能时请同步递增版本号，否则
 --   自更新会认为本地仍是旧版（或误判成同版本反复「已更新」）。
@@ -765,6 +765,25 @@ local function same_list(a, b)
     return true
 end
 
+-- 剔除本脚本托管的覆盖项，保留用户 / 其它脚本写进列表的项。
+-- apply_style_channel 全量重写列表、end-file 清场都走这里，避免两处重复判据。
+local function strip_managed(list)
+    local kept = {}
+    for _, entry in ipairs(list or {}) do
+        if type(entry) == 'string' then
+            local key = entry:match('^%s*([^=]+)%s*=')
+            local managed = false
+            if key then
+                for _, k in ipairs(MANAGED_OVERRIDE_KEYS) do
+                    if key == k then managed = true; break end
+                end
+            end
+            if not managed then kept[#kept + 1] = entry end
+        end
+    end
+    return kept
+end
+
 local function style_equal(a, b)
     if a == b then return true end
     if not a or not b then return false end
@@ -823,6 +842,35 @@ local function ass_style_info()
     return {playres_y = (playres_y and playres_y > 0) and playres_y or nil,
             base_fontsize = default_fs or max_fs,
             max_fontsize = max_fs}
+end
+
+-- v1.0.12：切换内封轨会换掉 sub-ass-extradata（ASS 头），而写进
+-- sub-ass-style-overrides 的 Fontsize / PlayResY 是**绝对值**（按上一条轨的
+-- PlayResY 与字号算出来的）。不重算就会把旧轨的物理字号带到新轨，表现为
+-- 「字体样式变了、也进了黑边，但大小不匹配」。
+--   physical_px = (Fontsize / PlayResY覆盖) × 帧高
+-- 记下本文件首次适配的「字号占比」base_fontsize/playres_y（无量纲 =
+-- 字号占帧高的比例），之后每条轨按同一个目标反解补偿倍率。
+local ass_ref_units = nil
+local ass_applied_header = nil
+
+-- 当前轨原生字号占比。基准只取 base_fontsize（Default = 最下面一行对白），
+-- 不取全表 max_fontsize —— 后者常被顶部大标题 / signs 样式拉高（见 T58）。
+local function ass_track_units()
+    local info = ass_style_info()
+    if not info or not info.playres_y or not info.base_fontsize then return nil end
+    return info.base_fontsize / info.playres_y
+end
+
+-- 切换到另一条内封轨时返回 !=1 的补偿倍率，使物理字号与首次适配时一致。
+local function ass_track_match()
+    local u = ass_track_units()
+    if not u or u <= 0 then return 1 end
+    if not ass_ref_units or ass_ref_units <= 0 then
+        ass_ref_units = u
+        return 1
+    end
+    return clamp(ass_ref_units / u, 0.25, 4.0)
 end
 
 -- 公共判定：内封 + ASS + 能读到样式表。外挂字幕 / SRT / 图形字幕一律
@@ -887,21 +935,25 @@ local function ass_fontsize_override(target_style)
     -- 不再用 Fontsize 表达缩放/字号，不代表可以放任坐标系改动画面字号。
     local need_comp = ass_pos_shift_active() and math.abs(ratio - 1) >= 0.0005
     if not ch and not need_comp then return nil end
+    -- v1.0.12：切轨后新样式表的原生字号占比不同，用补偿倍率把物理字号拉回
+    -- 本文件首次适配时的大小。关掉字号通道时不补偿（那是有意回到轨道原样）。
+    local match = ch and ass_track_match() or 1
     local sc = ch and effective_scale() or 1
     local base_px = baseline.size or o.size_baseline
     local size_factor = 1
     if ch and target_style.size and base_px > 0 then
         size_factor = target_style.size / base_px
     end
-    -- 快路径：字号=原样、缩放=×1 且没有 Y 位移，不写 Fontsize
+    -- 快路径：字号=原样、缩放=×1、没有 Y 位移、也不是另一条轨，不写 Fontsize
     if not need_comp and not (ch and target_style.size)
-        and math.abs(sc - 1) < 0.001 then return nil end
+        and math.abs(sc - 1) < 0.001
+        and math.abs(match - 1) < 0.0005 then return nil end
     local info = ass_style_info()
     local base_units = info and info.base_fontsize
         or (o.size_baseline * (o.ass_fontsize_ratio or 0.5625))
     -- y_render = y_ass × 帧高 / PlayResY；PlayResY 除以 ratio ⇒ 字体放大
     -- ratio 倍 ⇒ Fontsize 必须同时除以 ratio，物理字号才保持不变。
-    local factor = clamp(size_factor * sc / ratio, 0.02, 20)
+    local factor = clamp(size_factor * sc * match / ratio, 0.02, 20)
     -- 用户把字号点回基线、缩放点回 ×1（或黑边贴合刚被关掉）时，算出来正好
     -- 等于 ASS 原始字号。此时写 `Fontsize=20` 是无效覆盖，还会把多 style 的
     -- 原始字号层级压平成单一值 —— 必须清掉，让样式表回到原生状态。
@@ -922,13 +974,29 @@ local function ass_playres_y_override()
     return string.format('PlayResY=%g', info.playres_y / ratio)
 end
 
+-- 当前对白的行数。mpv 的 sub-text 把 ASS \N 摊成换行；sub-text-ass 里仍是 \N，
+-- 两种都认。只用于「整块盒别越出画面」，不参与字号基准的取值。
+local ass_max_lines = 1
+local function ass_line_count(text)
+    if type(text) ~= 'string' or text == '' then return 1 end
+    local t = text:gsub('\\[Nn]', '\n')
+    local _, n = t:gsub('\n', '')
+    return clamp(n + 1, 1, 6)
+end
+
 -- 黑边贴合时按 ASS 原始字号估算「缩放=×1」时的字幕盒物理高度。
 -- 示例 MKV：21 × 1.2 × (2160/288) = 189px，黑条 120px ⇒ 自动限缩到 ~0.57。
+-- v1.0.12 两条约定：
+--   ① 只按最下面一行对白匹配字号 ⇒ 基准取 base_fontsize(Default)，
+--      不再取 max_fontsize（截图那种大标题 / signs 样式会把盒高估大，
+--      反而把对白压得过小、或让最下行被推出画面)。
+--   ② 多行对白按本文件见过的最大行数累计整块盒高，保证所有行都在视频内。
 local function ass_unit_px(frame_h)
     if not ass_channel_active() then return nil end
     local info = ass_style_info()
     if not info or not info.playres_y or not info.base_fontsize then return nil end
-    local px = info.max_fontsize * ASS_LINE_GAP * (frame_h / info.playres_y)
+    local px = info.base_fontsize * ASS_LINE_GAP * (frame_h / info.playres_y)
+        * ass_max_lines
     return px > 0 and px or nil
 end
 
@@ -999,21 +1067,7 @@ local function apply_style_channel(target_style)
     end
 
     local cur_list = mp.get_property_native('sub-ass-style-overrides') or {}
-    local kept = {}
-    for _, entry in ipairs(cur_list) do
-        if type(entry) == 'string' then
-            local key = entry:match('^%s*([^=]+)%s*=')
-            local managed = false
-            if key then
-                for _, k in ipairs(MANAGED_OVERRIDE_KEYS) do
-                    if key == k then managed = true; break end
-                end
-            end
-            if not managed then kept[#kept + 1] = entry end
-        end
-    end
-    local merged = {}
-    for _, v in ipairs(kept) do merged[#merged + 1] = v end
+    local merged = strip_managed(cur_list)
     for _, v in ipairs(want) do merged[#merged + 1] = v end
     if not same_list(cur_list, merged) then
         mp.set_property_native('sub-ass-style-overrides', merged)
@@ -1324,6 +1378,9 @@ refresh_barfit = function()
                 * BAR_LINE_GAP * (img.h / 720))
         local box_frac = unit * fit.scale / img.h
         local target = (1 - bottom) + (bottom + box_frac) / 2
+        -- v1.0.12：整块盒（含上面几行）都必须留在视频内。盒顶不低于帧顶、
+        -- 盒底留出一点余量给描边/下伸部，避免最下面一行被画面底边裁掉。
+        target = clamp(target, box_frac, 1 - box_frac * 0.1)
         fit.y_ratio = clamp(target / anchor, 0.5, 2.0)
         fit.anchor_target = target
     end
@@ -1547,7 +1604,26 @@ local function switch_target(name, quiet)
         if not quiet then flash('编辑目标已是' .. (name == 'sec' and '次字幕' or '主字幕')) end
         return
     end
+    local from = cur()
     state.target = name
+    -- v1.0.12：自动适配（彩色检测自动套用 / 黑边字号贴合）的样式属于「当前这条
+    -- 字幕」，只是借目标轨落地；sub-font / sub-font-size / Fontsize 本来就是
+    -- 解码器级共享值。切换编辑目标时若另一轨没有用户手动样式，不能把它打回
+    -- baseline 默认值，否则用户看到「字体恢复默认了」。
+    if from.auto then
+        local empty = true
+        for _, k in ipairs({'font', 'size', 'bold', 'color', 'outline',
+                            'outline_color'}) do
+            if cur()[k] ~= nil then empty = false; break end
+        end
+        if empty then
+            for _, k in ipairs({'font', 'size', 'bold', 'color', 'outline',
+                                'outline_color'}) do
+                cur()[k] = from[k]
+            end
+            cur().auto = true
+        end
+    end
     apply_all(true, false)
     save_state()
     if not quiet then flash('编辑目标 → ' .. track_name() .. '（' .. style_desc() .. '）') end
@@ -2346,26 +2422,12 @@ run_inspect = function(gen, allow_retry)
         applied = apply_preset(true, true)
     end
     local report = preset_report(info, applied, skipped_dual)
-    if o.inspect_all_internal then
-        local tracks = internal_subtitle_tracks()
-        if #tracks > 0 then
-            local checked, pending = 0, {}
-            for _, t in ipairs(tracks) do
-                if inspected_internal[t.id] then checked = checked + 1
-                else pending[#pending + 1] = tostring(t.id) end
-            end
-            report = report .. string.format('\n内封字幕轨：共 %d 条，已检查 %d 条（当前 %s）',
-                #tracks, checked, internal_id and tostring(internal_id) or '外挂')
-            if #pending > 0 then
-                -- 真机实测示例 MKV 有 42 条内封字幕轨，全列会把左上角 OSD 撑出屏幕。
-                -- 最多列前 6 条，其余用「等 N 条」概括。
-                local shown = {}
-                for i = 1, math.min(#pending, 6) do shown[i] = pending[i] end
-                local more = #pending > 6 and (' 等 ' .. #pending .. ' 条') or ''
-                report = report .. '，待检查 ' .. table.concat(shown, '/') .. more
-            end
-        end
-    end
+    -- v1.0.13：不再把「内封字幕轨：共 N 条，已检查 M 条」拼进左上角 OSD。
+    --   这段文案是 v1.0.8「按轨记账放行重检」时代的进度提示；切轨改为一律重检后
+    --   账本已不参与放行，切到外挂轨时恒显示「已检查 0 条（当前外挂）」，
+    --   看着像漏检实则只是还没切过去，属于误导信息。
+    --   逐轨进度仍保留在 inspected_internal，并由 api_snapshot() 的
+    --   internal_tracks 字段结构化输出，外部脚本需要时可读（见 API 文档 §3）。
     last_report_text = report
     if report_clear_timer and report_clear_timer.kill then report_clear_timer:kill() end
     report_clear_timer = mp.add_timeout((o.report_ms or 6000) / 1000, function()
@@ -3068,11 +3130,57 @@ mp.observe_property('secondary-sub-pos', 'number',
 mp.observe_property('secondary-sub-scale', 'number',
     adopt_external('secondary-sub-scale', 'sec', 'scale'))
 
+--------------------------------------------------------------------
+-- v1.0.12：切换内封轨后重算绝对字号覆盖
+--
+-- sub-ass-extradata 是**当前**字幕轨的 ASS 头（[Script Info] + [V4+ Styles]）。
+-- 切轨后 PlayResY / Default.Fontsize 可能完全不同，而写进样式表的 Fontsize= /
+-- PlayResY= 是按上一条轨算出的**绝对值**：不重算就会把旧轨的物理字号带过去。
+-- 同一个头只应用一次（属性回写不会再改 extradata，但避免重复 OSD 微扰）；
+-- 本文件首个头由 file-loaded / ass_pending 负责，只有「已适配过之后再换头」
+-- 才补一次应用。
+--------------------------------------------------------------------
+local function reapply_ass_track(header)
+    if type(header) ~= 'string' or header == '' then return end
+    if header == ass_applied_header then return end
+    local switching = ass_applied_header ~= nil
+    ass_applied_header = header
+    if not switching then return end
+    if not (ass_channel_active() or ass_pos_shift_active()) then return end
+    apply_all(false)
+    nudge_reconfigure()
+end
+
+mp.observe_property('sub-ass-extradata', 'string',
+    function(_, header) reapply_ass_track(header) end)
+
+-- 多行对白第一次出现时，按新的整块盒高重算一次黑边贴合（0.3s 去抖）。
+local line_refit_timer = nil
+
+-- v1.0.12：行数统计的统一入口。真机实测 mpv 对图片型视频 + 内封 ASS 的
+-- sub-text 恒为 nil（不带本脚本也一样），所以 sub-text-ass（含 \N 的 ASS
+-- 事件文本）与次轨文本各挂一路备用观察器：任一可用即可让整块盒高生效。
+-- 只在行数变大时更新，重复触发无害；字号基准始终只取最下面一行。
+local function ass_note_text(val)
+    if type(val) ~= 'string' or val == '' then return end
+    local lines = ass_line_count(val)
+    if lines <= ass_max_lines then return end
+    ass_max_lines = lines
+    if runtime.bar_fit and barfit then
+        if line_refit_timer then line_refit_timer:kill() end
+        line_refit_timer = mp.add_timeout(0.3, function()
+            line_refit_timer = nil
+            refresh_barfit()
+        end)
+    end
+end
+
 -- 第一句对白渲染出来即触发检测：内封字幕片头常无对白，inspect_delay 后的首检会采空；
 -- 用户需求「按第一句底部对话字幕开始识别」——sub-text 由空转非空即是第一句对白出现。
 -- inspect_armed：首检(inspect_delay)跑过才触发，避免对白刚渲染就提前检测、抢在 inspect_delay
 -- 之前（守住「先看到原字幕、再转黑白」的时序）。inspect_done：检测成功后不再随每句对白重跑。
 mp.observe_property('sub-text', 'string', function(_, val)
+    ass_note_text(val)
     -- v1.0.9：file-loaded 当刻 demuxer 可能还没填好 sub-ass-extradata，
     -- 首个字幕包到达后补一次应用，让缩放/字号真正折进 Fontsize（只补一次）。
     if ass_pending and type(val) == 'string' and val ~= ''
@@ -3096,6 +3204,13 @@ mp.observe_property('sub-text', 'string', function(_, val)
     run_inspect()
 end)
 
+-- v1.0.12 备用文本通道：只补行数统计，不参与检测时序（inspect_* 仍只由
+-- sub-text 由空转非空驱动），避免改变 v1.0.8 以来「第一句对白才检测」的行为。
+mp.observe_property('sub-text-ass', 'string',
+    function(_, val) ass_note_text(val) end)
+mp.observe_property('secondary-sub-text', 'string',
+    function(_, val) ass_note_text(val) end)
+
 -- end-file 期间 mpv 会按 reset-on-next-file 重置 sub-pos/sub-scale，
 -- 那不是用户意图 ⇒ 打开窗口期禁止采纳，file-loaded 应用完再关闭。
 -- sub-margin-y 不在该重置列表里，必须在这里显式还原，否则黑边贴合会跨文件泄漏。
@@ -3103,6 +3218,15 @@ mp.register_event('end-file', function()
     in_reset_window = true
     barfit_gen = barfit_gen + 1
     disable_barfit()
+    -- v1.0.13：sub-ass-style-overrides 是解码器级共享列表，黑边贴合写进来的
+    -- PlayResY / Fontsize 是按上一部片子的 ASS 头算出的绝对值。字幕解码器卸载
+    -- 后不清除，会一直留到下一个文件解码器初始化，表现为「位置还在黑边里、
+    -- 字号还是上一部」。file-loaded 的 apply_all 虽会重写，但已晚于解码器 init。
+    local cur = mp.get_property_native('sub-ass-style-overrides') or {}
+    local kept = strip_managed(cur)
+    if not same_list(cur, kept) then
+        mp.set_property_native('sub-ass-style-overrides', kept)
+    end
 end)
 
 -- 启动即应用一次：让 style-overrides 列表在任何字幕轨初始化**之前**就位
@@ -3110,6 +3234,10 @@ end)
 apply_all(false)
 
 mp.register_event('file-loaded', function()
+    -- v1.0.12：per-file 账本全部清零，别把上个文件的字号参照 / 行数带到新文件。
+    ass_ref_units = nil
+    ass_applied_header = nil
+    ass_max_lines = 1
     -- 自动预设只对彩色字幕生效，不跨文件泄漏：先清除上个文件由「彩色检测」写入的
     -- 样式（auto=true），使新文件从「字幕原样」起；随后 run_inspect 若判定彩色再套用。
     -- 附带好处：清除后内封字幕的像素检测能看到原配色，不被上一处 force+白字干扰而漏检。
@@ -3117,6 +3245,8 @@ mp.register_event('file-loaded', function()
     clear_auto_style(state.sec)
     layout = compute_layout()   -- CN+JP 双语自动布局（per-file；非中日双语为 nil）
     apply_all(false)
+    -- 登记本文件首个 ASS 头；之后 sub-ass-extradata 再变即视为「切轨」。
+    reapply_ass_track(mp.get_property('sub-ass-extradata'))
     -- 每个文件重新检测：gen++ 作废上个文件遗留的检测链；首检在 inspect_delay 后，
     -- 字幕未就绪（未加载/片头无对白）则由 sub-text 观察器（第一句对白出现即触发）
     -- 与有界重试兜底，直到检出或超过 inspect_retries 次。
@@ -3125,6 +3255,14 @@ mp.register_event('file-loaded', function()
     inspected_internal = {}     -- v1.0.8：新文件重置逐轨检查账本
     inspect_attempts = 0
     inspect_total = 0           -- 新文件的累计尝试额度（硬上限，见 INSPECT_TOTAL_CAP）
+    -- v1.0.13：上个文件可能留着待执行的重试 / 行数重排定时器。前者会让
+    -- inspect_scheduled 一直为 true，新文件采样失败时不再排重试；后者会在
+    -- 新文件里跑一次 refresh_barfit，把黑边状态带回来。
+    inspect_scheduled = false
+    if line_refit_timer then
+        line_refit_timer:kill()
+        line_refit_timer = nil
+    end
     sub_text_was_empty = true   -- 新文件首句对白视为「新一段」
     inspect_armed = false       -- 首检跑过才允许 sub-text 观察器触发，避免提前于 inspect_delay
     ass_pending = runtime.ass_fontsize  -- v1.0.9：等 sub-ass-extradata 就绪后补应用
@@ -3142,19 +3280,17 @@ mp.register_event('file-loaded', function()
         if runtime.bar_fit then refresh_barfit() end
     end)
 end)
--- v1.0.8「所有的内封字幕都要被检查」：
---   旧逻辑一个文件只检测一次（inspect_done=true 后不再重检），文件里其它内封轨
---   （简体/繁体/英文/注释 signs 轨）用户切换过去时永远不会被检查、也不会套用样式。
---   这里按轨放行：切到尚未检查过的内封轨时重置一次性守卫，重新跑检测。
---   已检查过的轨直接跳过，避免来回切轨反复截图；inspect_armed 防止抢在首检之前；
---   INSPECT_TOTAL_CAP 仍是本文件的总尝试硬上限。
-local function reinspect_internal_track()
-    if not o.inspect_all_internal or not inspect_armed then return end
-    local id = current_internal_id()
-    if not id or inspected_internal[id] then return end
-    if inspect_total >= INSPECT_TOTAL_CAP then return end
+-- v1.0.13「切换字幕轨一律重新检测」：
+--   v1.0.8 只放行「尚未检查过的内封轨」，切到外挂轨、或切回已检查过的轨时
+--   inspect_done 仍为 true ⇒ 彩色（非黑白）字幕原样冒出来，自动预设也不会
+--   随轨切换清除 / 重新套用。改为按「轨变化」触发，不再按轨 id 是否见过。
+--   inspect_armed 仍防止抢在首检之前；inspect_total 在用户主动切轨时刷新额度，
+--   让新轨拿到完整重试机会（反复切轨是显式动作，不属于采样失败的无界重试）。
+local function reinspect_track()
+    if not inspect_armed then return end
     inspect_done = false
     inspect_attempts = 0
+    inspect_total = 0
     sub_text_was_empty = true
     -- 内封像素采样要求「还没被我们的 force 白字覆盖」：切到新轨前先撤掉上一条轨
     -- 的自动预设（只清 auto=true，用户手动设的样式不动），否则 inspect_style
@@ -3164,8 +3300,16 @@ local function reinspect_internal_track()
     apply_all(false)
     mp.add_timeout(0.1, function() run_inspect() end)
 end
-mp.observe_property('sid', 'number', function() reinspect_internal_track() end)
-mp.observe_property('secondary-sid', 'number', function() reinspect_internal_track() end)
+local function on_sub_track_change()
+    reinspect_track()
+    -- v1.0.12：部分 mpv 版本切轨不重发 sub-ass-extradata，延迟补读一次，
+    -- 保证 Fontsize / PlayResY 不会残留上一条轨的绝对值。
+    mp.add_timeout(0.1, function()
+        reapply_ass_track(mp.get_property('sub-ass-extradata'))
+    end)
+end
+mp.observe_property('sid', 'number', on_sub_track_change)
+mp.observe_property('secondary-sid', 'number', on_sub_track_change)
 
 -- playback-restart 覆盖 seek/reload 等造成的重载
 mp.register_event('playback-restart', function() apply_all(false) end)
@@ -3212,6 +3356,21 @@ local API_CALLS = {
     ['style-preset'] = true, ['reset'] = true, ['fix-override'] = true,
 }
 
+-- v1.0.13：逐轨检查进度改为 API 只读字段，不再占左上角 OSD。
+-- 这是「可选附加字段」，旧调用方不受影响（API 版本仍为 1.0.0）。
+local function internal_track_progress()
+    local tracks = internal_subtitle_tracks()
+    local checked, pending = 0, {}
+    for _, t in ipairs(tracks) do
+        if inspected_internal[t.id] then checked = checked + 1
+        else pending[#pending + 1] = tostring(t.id) end
+    end
+    local id = current_internal_id()
+    return {total = #tracks, checked = checked,
+            current_id = id, current_is_internal = id ~= nil,
+            pending = pending}
+end
+
 local function api_snapshot()
     local function track(k)
         local s = state[k]
@@ -3236,6 +3395,7 @@ local function api_snapshot()
         ass_fontsize_active = ass_channel_active(),
         ass_pos_shift_active = ass_pos_shift_active(),
         ass_y_ratio = ass_y_ratio(),
+        internal_tracks = internal_track_progress(),
         runtime = {override_all = runtime.override_all,
                    include_gray = runtime.include_gray,
                    bar_fit = runtime.bar_fit,

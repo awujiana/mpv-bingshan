@@ -17,7 +17,7 @@
 | --- | --- | --- |
 | `mpv.conf` / `input.conf` / `menu.conf` / `manager.json` | 播放器主配置与中文菜单化键位 | ✅ |
 | `scripts/` | mpv Lua 脚本目录（含两个 submodule 展开后的实体文件） | ✅ |
-| `scripts/uosc_subtitle_style.lua` | **核心自研脚本**，文件头 `-- @version: 1.0.11` 是本地版本依据 | ✅ |
+| `scripts/uosc_subtitle_style.lua` | **核心自研脚本**，文件头 `-- @version: 1.0.13` 是本地版本依据 | ✅ |
 | `scripts/uosc_updater.lua` | 自更新驱动；只做调度与 OSD，核心逻辑在 `script-modules/updater.lua` | ✅ |
 | `scripts/uosc_danmaku/` / `scripts/uosc_staff_credits/` | 两个 submodule（开发态是 gitlink，发布态展开为实体文件） | ✅ 实体文件 |
 | `script-modules/updater.lua` | 公共自更新模块副本，与 `awujiana/mpv-script-updater` **字节一致** | ✅ |
