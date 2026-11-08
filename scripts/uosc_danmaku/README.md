@@ -1,6 +1,16 @@
-# uosc_danmaku
+<div align="center">
 
-在MPV播放器中加载弹弹play弹幕，基于 uosc UI框架和弹弹play API的mpv弹幕扩展插件
+<h1>uosc 弹幕</h1>
+<h2>uosc_danmaku</h2>
+
+<strong>在 MPV 播放器中加载弹弹play 弹幕，基于 uosc UI 框架与弹弹play API 的 mpv 弹幕扩展插件</strong>
+
+</div>
+
+---
+
+> [!NOTE]
+> 本项目是 [Tony15246/uosc_danmaku](https://github.com/Tony15246/uosc_danmaku) 的 fork，上游代码版权归原作者，采用 MIT 协议；本 fork 仅做增量修改。
 
 > [!WARNING]
 > Release1.2.0及Release1.2.0之前的发行版，都由于弹弹play接口使用政策改版，部分功能无法使用。如果发现插件功能异常，比如搜索弹幕总是显示无结果，请拉取或下载主分支最新源代码；或下载[最新发行版](https://github.com/Tony15246/uosc_danmaku/releases/latest)
@@ -1328,3 +1338,33 @@ end)
 
 - [slqy123/uosc_danmaku](https://github.com/slqy123/uosc_danmaku) 本项目的fork版本，实现了通过dandanplay api发送弹幕的功能，由于版本的兼容性以及功能的易用性问题未被合并，具体讨论请参阅 [#220](https://github.com/Tony15246/uosc_danmaku/pull/220)
 - ~~[Loukyuu1120/uosc_danmaku](https://github.com/Loukyuu1120/uosc_danmaku) 本项目的fork版本，实现了自定义多个 api_servers 与 弹幕来源选择菜单 功能，具体讨论请参阅 [#282](https://github.com/Tony15246/uosc_danmaku/issues/282)~~ 相关功能主仓库已实现
+
+
+## 🏷 关联标签
+
+<p align="center">
+  <a href="https://github.com/topics/mpv"><img alt="mpv" src="https://img.shields.io/badge/mpv-1f6feb?style=flat-square"></a>
+  <a href="https://github.com/topics/uosc"><img alt="uosc" src="https://img.shields.io/badge/uosc-1f6feb?style=flat-square"></a>
+  <a href="https://github.com/topics/danmaku"><img alt="danmaku" src="https://img.shields.io/badge/danmaku-1f6feb?style=flat-square"></a>
+  <a href="https://github.com/topics/lua"><img alt="lua" src="https://img.shields.io/badge/lua-1f6feb?style=flat-square"></a>
+  <a href="https://github.com/topics/bilibili"><img alt="bilibili" src="https://img.shields.io/badge/bilibili-1f6feb?style=flat-square"></a>
+  <a href="https://github.com/topics/dandanplay"><img alt="dandanplay" src="https://img.shields.io/badge/dandanplay-1f6feb?style=flat-square"></a>
+</p>
+
+> 以上为本仓库的 GitHub Topics（关联标签）；可在仓库首页 Topics 区或 `gh repo edit awujiana/uosc_danmaku --add-topic "..."` 维护。
+
+## 🔗 关联仓库
+
+- [awujiana/uosc_danmaku](https://github.com/awujiana/uosc_danmaku) — 本仓库（fork）
+- [Tony15246/uosc_danmaku](https://github.com/Tony15246/uosc_danmaku) — 上游
+- [awujiana/uosc-staff-credits](https://github.com/awujiana/uosc-staff-credits) — 消费方（`modules/danmaku_link.lua`）
+
+## 📮 作者联系方式
+
+- **本 fork 维护者**：awujiana
+- **上游作者**：Tony15246
+- **邮箱**：bingshanlengtie@qq.com
+
+## 📄 开源协议
+
+本项目基于 **MIT** 协议开源（沿用上游）。上游版权归 © Tony15246；本 fork 的修改归 © awujiana。
