@@ -166,18 +166,29 @@ if MODE == 'plain' then
             string.format('n=%d base=%d', s.n, ctx.b.n))
     end)
     -- v1.0.11：用户报障「内封字幕点下移没反应」的正面验证。
-    -- pos=150 ⇒ ratio=1+0.5/0.94≈1.532 ⇒ PlayResY≈235，\pos(320,60) 的
-    -- 渲染 Y 从 60 推到 92（位移 32px）；Fontsize 同步除以 ratio 补偿字号。
+    -- v1.0.15：旧判据期待 pos=150 ⇒ ratio≈1.532 ⇒ PlayResY≈235、位移 32px，
+    --   但那正是把 \pos 对白推出视频画面的元凶（用户截图「一部分在视频外」）。
+    --   现在统一钳到 ass_pos_shift_max=1.06：PlayResY≈339.6、渲染 Y 60→约 64
+    --   （位移 ~4px）、Fontsize 同步除以 1.06。仍要求「真的动了」，并要求
+    --   倍率与字号补偿都停在上限，不许再出现旧版 235 那种绝对值。
     step('pos 150', '05-pos150-shift', function(s)
         ctx.shift = s
+        local ratio = s.pry and (360 / s.pry) or 0
         record('fs-nudge-moves-pos-subtitle',
-            s.y1 - ctx.b.y1 >= 20 and near(s.n, ctx.b.n, 0.15),
-            string.format('n %d -> %d, y1 %d -> %d', ctx.b.n, s.n, ctx.b.y1, s.y1))
+            s.y1 - ctx.b.y1 >= 2 and s.y1 - ctx.b.y1 <= 8
+            and near(s.n, ctx.b.n, 0.15),
+            string.format('n %d -> %d, y1 %d -> %d (bounded by 1.06)',
+                ctx.b.n, s.n, ctx.b.y1, s.y1))
         record('fs-nudge-writes-playres',
-            s.pry ~= nil and s.pry < 360 and s.pry > 200,
-            'PlayResY=' .. tostring(s.pry))
+            s.pry ~= nil and ratio > 1.0 and ratio <= 1.061,
+            string.format('PlayResY=%s ratio=%.4f limit=1.06',
+                tostring(s.pry), ratio))
         record('fs-nudge-compensates-fontsize',
-            s.fs ~= nil and s.fs < BASE_UNITS, 'Fontsize=' .. tostring(s.fs))
+            s.fs ~= nil and s.fs < BASE_UNITS
+            and s.fs >= BASE_UNITS / 1.06 - 0.1,
+            'Fontsize=' .. tostring(s.fs))
+        record('fs-nudge-ratio-at-limit', math.abs(ratio - 1.06) < 0.005,
+            string.format('ratio=%.4f', ratio))
         record('fs-nudge-boundary-clamps', math.abs(s.pos - 150) < 0.01,
             'sub-pos=' .. s.pos)
     end)

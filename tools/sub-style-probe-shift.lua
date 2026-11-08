@@ -151,16 +151,28 @@ if MODE == 'bars' then
             string.format('bot y0=%d bar_top=%d', s.bot.y0, bar_top))
     end)
     -- 位移通道开启：点「下移」必须真的推动 \pos 对白（复现原报障的反向验证）
+    -- v1.0.15：旧判据期待 ratio>1.4 / 位移≥20px，那正是把底部对白推到视频外
+    --   的越界行为（用户截图「对话字幕有一部分在视频外了」）。现在 pos=150
+    --   钳到 ass_pos_shift_max=1.06，仍要求确实动了（~4px）、顶部 signs 仍在
+    --   帧内，且 PlayResY / Fontsize 都停在上限；更严格的像素级不变量由
+    --   tools/sub-style-probe-bounds.lua（E2E 5m）负责。
     step('pos 150', '02-pos150-shift', function(s)
+        local ratio = s.pry and (BASE_PRY / s.pry) or 0
         record('sh-pos150-writes-playres',
-            s.pry ~= nil and BASE_PRY / s.pry > 1.4,
-            'PlayResY=' .. tostring(s.pry))
+            s.pry ~= nil and ratio > 1.0 and ratio <= 1.061,
+            string.format('PlayResY=%s ratio=%.4f limit=1.06',
+                tostring(s.pry), ratio))
         record('sh-pos150-moves-positioned-subtitle',
-            s.top.y1 - ctx.off.top.y1 >= 20,
-            string.format('top y1 %d -> %d', ctx.off.top.y1, s.top.y1))
+            s.top.y1 - ctx.off.top.y1 >= 2
+            and s.top.y1 - ctx.off.top.y1 <= 8
+            and s.top.y1 <= s.h - 1,
+            string.format('top y1 %d -> %d h=%d', ctx.off.top.y1, s.top.y1, s.h))
         record('sh-pos150-compensates-fontsize',
-            s.fs ~= nil and s.fs < BASE_UNITS / 1.4,
+            s.fs ~= nil and s.fs < BASE_UNITS
+            and s.fs >= BASE_UNITS / 1.06 - 0.1,
             'Fontsize=' .. tostring(s.fs))
+        record('sh-pos150-ratio-at-limit', math.abs(ratio - 1.06) < 0.005,
+            string.format('ratio=%.4f', ratio))
     end)
     -- 关通道后重放用户报障：sub-pos 变了，但 \pos 字幕像素纹丝不动
     step('ass-pos-shift-toggle', '03-channel-off', nil)

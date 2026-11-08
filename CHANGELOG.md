@@ -8,6 +8,23 @@
 
 ## [未发布]
 
+### 修复（v1.0.15）：对话字幕不得越过画面边界
+
+- `uosc_subtitle_style.lua` **v1.0.14 → v1.0.15**。用户截图报障「对话字幕有一部分在视频外了」：960×540 截图里底部对白从 `y=518` 延伸到 `y=539`，末两行仍有 177~182 个近白像素，字形下半截被画面下边缘直接截断，顶部 signs 完整。这不是「没进黑边」，而是 `\pos` 对白盒底越过了视频帧。
+- 用纯 Python Matroska 夹具（`\pos(320,60)` / `\pos(320,338)`、上下 24px 黑条 / 无黑条两种）在 640×360 真机复现：
+  | `sub-pos` | 旧 `ratio` | 底部对白像素 |
+  | --- | --- | --- |
+  | 100 | 1.000 | `y342..354`，完整 |
+  | 110 | 1.106 | `y357..359`，只剩 5 行（截图里的「部分在视频外」） |
+  | 120 | 1.213 | 无像素，整条对白消失在视频外 |
+  | 150 | 1.532 | 无像素 |
+  根因是 v1.0.11 引入的 `PlayResY` 位移通道：`\pos` 的 Y 是 ASS 盒底对齐点（默认 `\an2`），盒底 ≈ `ass_anchor_ratio × 帧高 × ratio`，而手动分支的 `clamp(..., 0.5, 2.0)` 等于放任把字幕推到帧外，黑边贴合反解也有同样隐患。
+- 新增 conf **`ass_pos_shift_max=1.06`**（`1.0~1.5` 可配，越界 / 非数字回退 1.06）。`y_ratio_limit()` 统一钳住 `ass_y_ratio()` 的三条来源：手动「上移/下移 1%」、pos 预设、黑边贴合反解；`Fontsize` 补偿与 `PlayResY` 覆盖仍取同一个 ratio，物理字号不变。默认 1.06 ≈ `1/0.94` 减描边余量，容得下黑边贴合反解实测的 1.057。到达上限后继续点下移会明确提示「⚠ 已到画面边界：再下移会让字幕落到视频外，位移已停在上限」，不静默吞掉点击。
+- 修复后真机（两种夹具一致）：`pos=110/120/150` 底部对白都停在 `y342..355`（24px 黑边）/ `y340..357`（无黑边），`PlayResY=339.623`（ratio 1.060），盒高与像素数不再缩水；`pos=100` 复位时覆盖项清空。
+- 对外 API 快照新增只读字段 **`ass_y_limit`**（默认 1.06），API 版本仍为 `1.0.0`，不新增 message、不改动作白名单。
+- **纳入正式测试流程**：新增 `tools/sub-style-probe-bounds.lua` 真机探针（`screenshot-raw('subtitles')` 与 `('video')` 逐像素差分，TOP / BOT 双波段），判据同时检查像素数 ≥ 基线 75%、盒高不缩水、`y0 >= 0`、`y1 <= h-1` —— 只看 `y1` 会漏判「贴边裁切」。`tools/sub-style-e2e.py` 新增第 **5m** 组（`bars=24` / `bars=0` 两夹具，连续 pos 110 → nudge ×2 → pos 150 → pos 100）；`tools/sub-style-test.lua` 新增 **T60**（conf / 脚本默认值、API、手动与连续微调钳位、非法配置回退、黑边反解、边界提示），单测 412 → **446 条全绿**；全仓 Lua 语法 222 个文件 FAIL 0；`sub-style-conf-verify.py` PASS（52 项）。全套真机 E2E `SUMMARY sub-style-e2e PASS fail=0`、**325 条 PASS**（独立公开仓库 318 条，5m 两轮各 18 项）。
+- ⚠ v1.0.14「保持原样」默认静音后，依赖左上角 OSD 像素 / `report_shown` 的旧 E2E 轮次（B/E 预设、5k 切轨）显式加 `--script-opts=uosc_subtitle_style-show_keep_original=yes`；默认静音由 T27d / T27e 守。`sub-style-probe-fontsize.lua` / `sub-style-probe-shift.lua` 里期待 ratio `>1.4` 的旧断言同步改为「钳在 1.06、完整在帧内」。
+
 ### 新增（v1.0.11）
 
 - `uosc_subtitle_style.lua` **v1.0.11**：新增「内封定位字幕可下移」通道。真机逐通道实测确认带 `\pos` 的 explicit ASS 事件对 `sub-pos` / `sub-scale` / `sub-font-size` 全部豁免、`sub-margin-y` 在 ASS 下是死通道，唯一能改 Y 的是覆盖 ASS `[Script Info]` 的 `PlayResY`；据此把「上移/下移」与「上下黑边贴合」折成 `ratio` 写进 `PlayResY`，并用 `Fontsize` 除以 `ratio` 补回物理字号。对话轨道本身是 `\pos` 对白时也能整条推进下黑边、点下移即时生效。

@@ -21,7 +21,7 @@
 | 仓库 | 对应本配置路径 | 说明 | 更新方式 |
 | --- | --- | --- | --- |
 | [awujiana/mpv-bingshan](https://github.com/awujiana/mpv-bingshan) | 仓库根 | **本配置仓库**（`portable_config` 开箱即用发布副本） | 从本仓库 `main` 下载 zip |
-| [awujiana/uosc_subtitle_style](https://github.com/awujiana/uosc_subtitle_style) | `scripts/uosc_subtitle_style.lua` | 内封字幕样式切换：主 / 次分轨、黑白预设、上下黑边贴合、ASS `Fontsize` 缩放、`PlayResY` 位移、对外 API（当前 `v1.0.11`） | 自更新器跟 Release 最新资产，覆盖单文件 |
+| [awujiana/uosc_subtitle_style](https://github.com/awujiana/uosc_subtitle_style) | `scripts/uosc_subtitle_style.lua` | 内封字幕样式切换：主 / 次分轨、黑白预设、上下黑边贴合、ASS `Fontsize` 缩放、`PlayResY` 位移、画面边界守护、对外 API（当前 `v1.0.15`） | 自更新器跟 Release 最新资产，覆盖单文件 |
 | [awujiana/uosc-staff-credits](https://github.com/awujiana/uosc-staff-credits) | `scripts/uosc_staff_credits/` | Bangumi 职员表 / 角色介绍 / 封面简介 / 制作评分，含对外 API | 自更新器 `git fetch` + **仅快进** |
 | [awujiana/uosc_danmaku](https://github.com/awujiana/uosc_danmaku) | `scripts/uosc_danmaku/` | 弹弹play 弹幕加载、延迟与保存（submodule，由 Tony15246 原作分叉维护） | `git submodule update --init --recursive` |
 | [awujiana/mpv-script-updater](https://github.com/awujiana/mpv-script-updater) | `script-modules/updater.lua` | 公共自更新模块 + 《脚本更新规范》 + 单测 / 真机 E2E / 变异测试，**唯一权威来源** | 本目录保持字节一致副本（`@version: 1.0.0`） |

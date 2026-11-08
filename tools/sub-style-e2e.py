@@ -37,6 +37,10 @@
 #       与切回来都必须重新检测、重新套用或清除自动预设。
 #   5l. v1.0.13 换片清场：有黑边 → 无黑边，end-file 清掉 PlayResY / Fontsize
 #       绝对覆盖，新文件黑边贴合关闭、边距 / 字号回到基线。
+#   5m. v1.0.15 画面边界守护：bars=24 / bars=0 两种夹具，连续点下移到
+#       pos 110/111/112/150，底部 \pos 对白必须「盒高不缩水 + 完整在帧内」，
+#       PlayResY 倍率被钳在 ass_pos_shift_max，顶部 signs 仍可见。回归用户
+#       截图「对话字幕有一部分在视频外了」（修复前 pos=110 只剩 5 行像素）。
 #   ⚠ 第三方插件（.gitmodules 里的 submodule）自身的 Lua 报错由 lua_errors()
 #     按日志标签隔离，被测脚本与探针的任何报错仍然算 FAIL。
 # 用法（在 portable_config/ 下）：python tools/sub-style-e2e.py
@@ -98,6 +102,7 @@ PROBE_API = os.path.join(PORTABLE, 'tools', 'sub-style-probe-api.lua')
 PROBE_SHIFT = os.path.join(PORTABLE, 'tools', 'sub-style-probe-shift.lua')
 PROBE_TRACKS = os.path.join(PORTABLE, 'tools', 'sub-style-probe-tracks.lua')
 PROBE_REINSPECT = os.path.join(PORTABLE, 'tools', 'sub-style-probe-reinspect.lua')
+PROBE_BOUNDS = os.path.join(PORTABLE, 'tools', 'sub-style-probe-bounds.lua')
 STATE_FILE = os.path.join(PORTABLE, 'uosc-subtitle-style-state.json')
 PRESET_FILE = os.path.join(PORTABLE, 'uosc-subtitle-style-preset.json')
 FONT_CACHE = os.path.join(PORTABLE, 'uosc-subtitle-style-fonts.json')
@@ -397,6 +402,11 @@ def main():
                 '--screenshot-dir=' + workdir,
                 '--screenshot-template=' + tag,
                 '--screenshot-format=png',
+                # v1.0.14 起「保持原样」默认静音（show_keep_original=no）。
+                # 5b 的 report_region_diff 靠左上角报告像素证明检测确实跑过，
+                # 且 B/E 正是「保持原样」用例，故这些真机轮次显式打开报告；
+                # 默认静音本身由单测 T27d / T27e 守，不在这里放松。
+                '--script-opts=uosc_subtitle_style-show_keep_original=yes',
                 '--watch-later-dir=' + watch_dir,
                 '--save-position-on-quit=no',
                 '--no-resume-playback',
@@ -750,7 +760,8 @@ def main():
         'fs-size-step-writes-fontsize', 'fs-size-step-enlarges',
         'fs-size-step-reversible',
         'fs-nudge-moves-pos-subtitle', 'fs-nudge-writes-playres',
-        'fs-nudge-compensates-fontsize', 'fs-nudge-boundary-clamps',
+        'fs-nudge-compensates-fontsize', 'fs-nudge-ratio-at-limit',
+        'fs-nudge-boundary-clamps',
         'fs-nudge-1-pos-step', 'fs-nudge-1-playres-ratio',
         'fs-pos-reset-clears-playres', 'fs-pos-reset-restores-visual',
         'fs-toggle-off-clears-fontsize',
@@ -925,7 +936,7 @@ def main():
         'sh-fit-off-clears-playres', 'sh-fit-off-clears-fontsize',
         'sh-fit-off-dialogue-leaves-bar',
         'sh-pos150-writes-playres', 'sh-pos150-moves-positioned-subtitle',
-        'sh-pos150-compensates-fontsize',
+        'sh-pos150-compensates-fontsize', 'sh-pos150-ratio-at-limit',
         'sh-channel-off-no-playres', 'sh-channel-off-keeps-pos-subtitle',
         'sh-channel-off-sub-pos-changed',
         'sh-refresh-restores-playres', 'sh-refresh-dialogue-back-in-bar',
@@ -1105,9 +1116,13 @@ def main():
         'ri-internal-back-to-colored-reinspected',
         'ri-internal-back-to-colored-reapplies',
     )
+    # 「切到白字（保持原样）」用 report_shown 递增证明重新检测发生；v1.0.14
+    # 默认静音后该 OSD 不再弹出，故本轮显式打开 show_keep_original，保持探针
+    # 语义不变（默认静音由单测 T27d 守）。
     tracks_asserts('ri-switch-', run_reinspect(
         'tracks', 'tracks', ri_tracks,
-        ('--sub-file=' + FIXTURE_COLORED, '--sub-file=' + FIXTURE_MAIN)),
+        ('--sub-file=' + FIXTURE_COLORED, '--sub-file=' + FIXTURE_MAIN,
+         '--script-opts=uosc_subtitle_style-show_keep_original=yes')),
         reinspect_tracks_expected)
 
     reinspect_files_expected = (
@@ -1119,6 +1134,73 @@ def main():
     )
     tracks_asserts('ri-files-', run_reinspect('files', 'files', ri_bars),
                    reinspect_files_expected)
+
+    # ---- 5m. v1.0.15：字幕不得越过画面边界（用户截图回归） ----
+    # 截图里底部对白字形下半截被画面下边缘切掉。真机复现：修复前
+    # pos=110 → BOT 只剩 5 行像素，pos=120 → 整条对白消失在视频外。
+    # 判据刻意同时检查「盒高不缩水」与「y1 <= h-1」：被裁时 y1 卡在
+    # 底边而盒高骤减，只看 y1 会漏判。
+    bnd_fixtures = {}
+    for kind, bars in (('bars', 24), ('nobars', 0)):
+        p = os.path.join(workdir, 'bounds-' + kind + '.mkv')
+        mkvmod.build(p, bars=bars, events=(
+            '{\\pos(320,60)}TOPDIALOG',
+            '{\\pos(320,338)}BOTTOMDIALOG',
+        ))
+        bnd_fixtures[kind] = p
+    check('bnd-fixtures-built',
+          all(os.path.getsize(p) > 1024 for p in bnd_fixtures.values()),
+          ' / '.join('%s=%d' % (k, os.path.getsize(v))
+                     for k, v in bnd_fixtures.items()))
+
+    def run_bounds(kind):
+        for p in (STATE_FILE, PRESET_FILE):
+            if os.path.exists(p):
+                os.remove(p)
+        blog = os.path.join(workdir, 'bounds-' + kind + '-log.txt')
+        bcmd = [
+            MPV, '--script=' + PROBE_BOUNDS,
+            '--vo=gpu', '--ao=null', '--pause=yes',
+            '--image-display-duration=inf',
+            '--watch-later-dir=' + watch_dir,
+            '--save-position-on-quit=no', '--no-resume-playback',
+            '--msg-level=all=info', bnd_fixtures[kind],
+        ]
+        benv = dict(env)
+        benv['SUBSTYLE_BOUNDS_KIND'] = kind
+        print('RUN(bounds-%s):' % kind, ' '.join(bcmd))
+        bproc = run_mpv(bcmd, env=benv,
+                        stdout=open(blog, 'w'), stderr=subprocess.STDOUT,
+                        timeout=240)
+        print('mpv(bounds-%s) exit=%d' % (kind, bproc.returncode))
+        return open(blog, encoding='utf-8', errors='replace').read()
+
+    bounds_expected = (
+        'bnd-baseline-dialogue-in-frame', 'bnd-baseline-top-sign-visible',
+        'bnd-ratio-clamped-at-limit', 'bnd-api-limit-exposed',
+        'bnd-reset-clears-playres', 'bnd-reset-dialogue-in-frame',
+    ) + tuple(
+        'bnd-%s-%s' % (tag, suffix)
+        for tag in ('pos110', 'nudge1', 'nudge2', 'pos150')
+        for suffix in ('dialogue-not-clipped', 'playres-bounded',
+                       'top-sign-visible')
+    )
+    for kind in ('bars', 'nobars'):
+        btext = run_bounds(kind)
+        rs = probe_of(btext)
+        for name in bounds_expected:
+            if name not in rs:
+                check('bnd-%s-%s' % (kind, name), False, 'missing in log')
+            else:
+                check('bnd-%s-%s' % (kind, name), rs[name][0] == 'PASS',
+                      rs[name][1][:150])
+        sm = re.search(r'PROBE SUMMARY pass=(\d+) fail=(\d+)', btext)
+        check('bnd-%s-summary-all-ok' % kind,
+              bool(sm) and sm.group(2) == '0',
+              sm.group(0) if sm else 'not found')
+        es, ig = lua_errors(btext)
+        check('bnd-%s-no-lua-errors' % kind, len(es) == 0,
+              '; '.join(es[:2]) + (' | 已忽略第三方插件报错 %d 行' % ig if ig else ''))
 
     # ---- 6. 清理测试产物 ----
     for p in (STATE_FILE, PRESET_FILE, FONT_CACHE):

@@ -7,6 +7,10 @@
 --       阈值）、预设样式（读写缓存/开关/恢复出厂）、左上角报告与 OSD 对齐还原。
 
 local SCRIPT = 'scripts/uosc_subtitle_style.lua'
+-- fresh_script_env() 会全局替换 io.open 成虚拟 FS；T60 需要读真实 conf / 脚本头，
+-- 因此在任何 stub 生效前先留一份真实句柄。刻意用全局：本文件顶层局部变量
+-- 已到 Lua 5.1 的 200 上限，再加一个 local 会直接编译失败。
+REAL_IO_OPEN = io.open
 
 local pass, fail = 0, 0
 local function check(name, ok, detail)
@@ -3341,6 +3345,185 @@ restore59[#restore59 + 1] = r59c
 for i = #restore59, 1, -1 do restore59[i]() end
 end
 run_t59()
+
+--------------------------------------------------------------------
+-- T60：v1.0.15「字幕不得越过画面边界」（用户截图回归）
+-- 截图：底部对白字形下半截被画面下边缘裁掉；真机复现（640×360 夹具）：
+--   pos=100 → ratio 1.000 完整；pos=110 → 1.106 只剩 5 行像素；
+--   pos=120 → 1.213 整条对白消失在视频外。
+-- 根因：ass_y_ratio() 手动分支旧版 clamp 到 2.0，黑边反解同样没有守护。
+-- 这里锁死：① conf / 脚本默认上限 1.06 且 API 可见；② 手动 pos 预设与
+-- 连续 nudge 都钳在 1.06、Fontsize 同步补偿、到上限明确提示；③ 非法配置
+-- 回退、合法自定义生效；④ 黑边贴合反解也走同一上限。
+-- 与 T53/T56 同理用函数包裹，绕开 Lua 5.1 单函数 200 局部变量上限。
+--------------------------------------------------------------------
+function run_t60()
+local ASS60 = table.concat({
+    '[Script Info]', 'ScriptType: v4.00+', 'PlayResX: 384', 'PlayResY: 288', '',
+    '[V4+ Styles]',
+    'Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour',
+    'Style: Default,Microsoft YaHei,21,&H00FFFFFF,&H000000FF', '',
+}, '\n')
+local LIMIT60 = 1.06
+
+local function setup60(opts)
+    local r = fresh_script_env()
+    env.opt_overrides = opts or {}
+    set_tracks(false)
+    env.props['sub-font-size'] = 38
+    env.props['sub-ass-style-overrides'] = nil
+    env.props['sub-ass-extradata'] = ASS60
+    env.props['sid'] = 1
+    env.props['track-list'] = {{type = 'sub', id = 1}}
+    load_script()
+    return r
+end
+local function ov60(key)
+    for _, e in ipairs(env.props['sub-ass-style-overrides'] or {}) do
+        local v = e:match('^' .. key .. '=(.+)$')
+        if v then return tonumber(v) end
+    end
+    return nil
+end
+local function ratio60()
+    local p = ov60('PlayResY')
+    return p and p > 0 and (288 / p) or 1
+end
+local function api60()
+    local ok, v = pcall(jdec, env.props['user-data/uosc_subtitle_style/state'] or '{}')
+    return ok and v or {}
+end
+local function read_real(path)
+    local f = REAL_IO_OPEN(path, 'r')
+    if not f then return '' end
+    local s = f:read('*a') or ''
+    f:close()
+    return s
+end
+
+-- ① 默认上限必须同时落在 conf、脚本 o 表与对外 API 上
+local conf60 = read_real('script-opts/uosc_subtitle_style.conf')
+local src60 = read_real(SCRIPT)
+check('t60-conf-declares-limit',
+    conf60:find('ass_pos_shift_max=1.06', 1, true) ~= nil,
+    'conf bytes=' .. #conf60)
+check('t60-conf-documents-clipping',
+    conf60:find('视频外', 1, true) ~= nil
+    and conf60:find('1.06', 1, true) ~= nil)
+check('t60-script-default-is-1-06',
+    src60:find('ass_pos_shift_max = 1.06,', 1, true) ~= nil,
+    'script bytes=' .. #src60)
+check('t60-script-limits-both-sources',
+    src60:find('clamp(barfit.y_ratio, 0.5, hi)', 1, true) ~= nil
+    and src60:find('clamp(target / anchor, 0.5, y_ratio_limit())', 1, true) ~= nil)
+
+local r60a = setup60()
+check('t60-api-default-limit',
+    math.abs((api60().ass_y_limit or 0) - LIMIT60) < 0.0005,
+    'ass_y_limit=' .. tostring(api60().ass_y_limit))
+check('t60-default-no-playres',
+    ov60('PlayResY') == nil and math.abs((api60().ass_y_ratio or 0) - 1) < 0.0005,
+    'PlayResY=' .. tostring(ov60('PlayResY')))
+
+-- ② 手动 pos 预设：修复前 110 会算出 1.106、150 会算出 1.532
+env.messages['pos']('110')
+check('t60-pos110-ratio-clamped', math.abs(ratio60() - LIMIT60) < 0.001,
+    string.format('PlayResY=%s ratio=%.4f', tostring(ov60('PlayResY')), ratio60()))
+check('t60-pos110-not-old-1-106', ratio60() < 1.07,
+    string.format('ratio=%.4f', ratio60()))
+check('t60-pos110-fontsize-compensated',
+    math.abs((ov60('Fontsize') or 0) - 21 / LIMIT60) < 0.05,
+    'Fontsize=' .. tostring(ov60('Fontsize')))
+check('t60-pos110-api-ratio',
+    math.abs((api60().ass_y_ratio or 0) - LIMIT60) < 0.001,
+    'ass_y_ratio=' .. tostring(api60().ass_y_ratio))
+check('t60-pos110-hints-boundary',
+    (last_showtext() or ''):find('已到画面边界', 1, true) ~= nil, last_showtext())
+local pry110 = ov60('PlayResY')
+env.messages['pos']('150')
+check('t60-pos150-same-ratio',
+    ov60('PlayResY') == pry110 and math.abs(ratio60() - LIMIT60) < 0.001,
+    string.format('PlayResY=%s ratio=%.4f', tostring(ov60('PlayResY')), ratio60()))
+check('t60-pos150-api-ratio',
+    math.abs((api60().ass_y_ratio or 0) - LIMIT60) < 0.001,
+    'ass_y_ratio=' .. tostring(api60().ass_y_ratio))
+env.messages['pos']('101')
+check('t60-below-limit-not-clamped',
+    math.abs(ratio60() - (1 + 0.01 / 0.94)) < 0.002,
+    string.format('ratio=%.5f', ratio60()))
+check('t60-below-limit-no-hint',
+    (last_showtext() or ''):find('已到画面边界', 1, true) == nil, last_showtext())
+env.messages['pos']('100')
+check('t60-reset-clears-playres', ov60('PlayResY') == nil,
+    tostring(ov60('PlayResY')))
+check('t60-reset-clears-fontsize', ov60('Fontsize') == nil,
+    tostring(ov60('Fontsize')))
+-- 连续点「下移 1%」12 次（真实操作路径）也不得越过边界
+for _ = 1, 12 do env.messages['nudge']('1') end
+check('t60-repeated-nudge-stays-bounded',
+    env.props['sub-pos'] == 112 and math.abs(ratio60() - LIMIT60) < 0.001,
+    string.format('sub-pos=%s ratio=%.4f', tostring(env.props['sub-pos']), ratio60()))
+check('t60-repeated-nudge-hints-boundary',
+    (last_showtext() or ''):find('已到画面边界', 1, true) ~= nil, last_showtext())
+r60a()
+
+-- ③ y_ratio_limit() 的输入校验：越界 / 非数字一律回退 1.06，合法值生效
+local cases60 = {
+    {name = 'custom-1-03', val = 1.03, want = 1.03},
+    {name = 'below-range', val = 0.9, want = LIMIT60},
+    {name = 'above-range', val = 2.0, want = LIMIT60},
+    {name = 'non-number', val = 'bad', want = LIMIT60},
+    {name = 'valid-1-2', val = 1.2, want = 1.2},
+}
+for _, c in ipairs(cases60) do
+    local r = setup60({ass_pos_shift_max = c.val})
+    env.messages['pos']('150')
+    check('t60-limit-' .. c.name .. '-api',
+        math.abs((api60().ass_y_limit or 0) - c.want) < 0.0005,
+        'ass_y_limit=' .. tostring(api60().ass_y_limit))
+    check('t60-limit-' .. c.name .. '-ratio',
+        math.abs(ratio60() - c.want) < 0.001,
+        string.format('PlayResY=%s ratio=%.4f want=%.4f',
+            tostring(ov60('PlayResY')), ratio60(), c.want))
+    r()
+end
+
+-- ④ 黑边贴合反解：把 anchor 改小模拟极端片源，修复前 target/anchor ≈ 1.24
+--    会被写进 PlayResY（旧上限 2.0），现在必须同样钳到 1.06。
+local function barfit60(opts)
+    local r = bars_env(12, 12, 128)
+    env.props['sub-ass-extradata'] = ASS60
+    env.props['sub-font-size'] = 38
+    for k, v in pairs(opts or {}) do env.opt_overrides[k] = v end
+    load_script()
+    env.events['file-loaded']()
+    flush_timers()
+    return r
+end
+local r60b = barfit60({ass_anchor_ratio = 0.8})
+local bf60 = api60().barfit or {}
+check('t60-barfit-ratio-clamped',
+    type(bf60.y_ratio) == 'number' and math.abs(bf60.y_ratio - LIMIT60) < 0.001,
+    'y_ratio=' .. tostring(bf60.y_ratio))
+check('t60-barfit-not-old-2-0',
+    type(bf60.y_ratio) == 'number' and bf60.y_ratio < 1.07,
+    'y_ratio=' .. tostring(bf60.y_ratio))
+check('t60-barfit-api-ratio',
+    math.abs((api60().ass_y_ratio or 0) - LIMIT60) < 0.001,
+    'ass_y_ratio=' .. tostring(api60().ass_y_ratio))
+check('t60-barfit-playres-bounded',
+    ov60('PlayResY') ~= nil and math.abs(ratio60() - LIMIT60) < 0.001,
+    string.format('PlayResY=%s ratio=%.4f', tostring(ov60('PlayResY')), ratio60()))
+r60b()
+local r60c = barfit60({ass_anchor_ratio = 0.8, ass_pos_shift_max = 1.02})
+check('t60-barfit-custom-limit',
+    math.abs(((api60().barfit or {}).y_ratio or 0) - 1.02) < 0.001
+    and math.abs(ratio60() - 1.02) < 0.001,
+    string.format('y_ratio=%s ratio=%.4f',
+        tostring((api60().barfit or {}).y_ratio), ratio60()))
+r60c()
+end
+run_t60()
 
 for _, r in ipairs(restore50) do r() end
 restore51(); restore49(); restore48()

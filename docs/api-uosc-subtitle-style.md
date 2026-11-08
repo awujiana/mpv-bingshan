@@ -15,6 +15,11 @@
 > v1.0.14 起「保持原样」的左上角 OSD 报告**默认静音**（conf `show_keep_original=no`）：
 > 套用预设的报告仍照常弹出，与总开关 `show_report` 是「与」关系；快照新增
 > `runtime.show_keep_original` / `runtime.last_report_show`（字段表已标注）。
+>
+> v1.0.15 起快照新增 `ass_y_limit`：`ass_y_ratio()` 的**画面边界上限**（conf
+> `ass_pos_shift_max`，默认 `1.06`）。手动下移 / pos 预设 / 黑边贴合反解三条
+> 来源都钳到该值，避免带 `\pos` 的 ASS 对白被推出视频画面；仍是可选附加字段，
+> **不新增 message、不改 API 版本**。
 
 ## 1. 设计边界
 
@@ -90,7 +95,8 @@ local raw = mp.get_property_native('user-data/uosc_subtitle_style/state')
 | `barfit` | object? | 生效时存在：`top` / `bottom`（占帧高比例）、`scale`（限缩倍率）、`margin_y`（整数 px）、`y_ratio` / `anchor_target`（v1.0.11，内封 `\pos` 位移用，仅内封 ASS 时存在） |
 | `ass_fontsize_active` | boolean | 内封定位 ASS 的 `Fontsize` 通道是否激活（v1.0.9） |
 | `ass_pos_shift_active` | boolean | 内封定位 ASS 的 `PlayResY` 垂直位移通道是否激活（v1.0.11） |
-| `ass_y_ratio` | number | 当前应施加的 Y 坐标系放大倍率（1 = 不位移）；由黑边贴合或 1% 微调反解，见架构文档 §20.3 |
+| `ass_y_ratio` | number | 当前应施加的 Y 坐标系放大倍率（1 = 不位移）；由黑边贴合或 1% 微调反解，见架构文档 §20.3；**v1.0.15 起恒 ≤ `ass_y_limit`** |
+| `ass_y_limit` | number | **v1.0.15**：`ass_y_ratio()` 的画面边界上限，来自 conf `ass_pos_shift_max`（默认 `1.06`，有效范围 `1.0~1.5`，越界/非数字回退 `1.06`）。手动下移 / pos 预设 / 黑边贴合反解三条来源都钳到该值，防止 `\pos` 对白落到视频外；见架构文档 §23 |
 | `internal_tracks` | object | **v1.0.13**：内封轨检查进度；OSD 不再显示该文案，改由此字段输出 |
 | `internal_tracks.total` | number | 当前文件的内封字幕轨总数（不含外挂） |
 | `internal_tracks.checked` | number | 本文件内已成功检出过的内封轨数；v1.0.13 起**只作记录**，不影响切轨是否重检 |
@@ -241,6 +247,8 @@ F9 script-message-to uosc_subtitle_style api my_script k1 get-state
 | 真机 E2E | `tools/sub-style-e2e.py` 第 5h 组（v1.0.11） | `show_report=yes\|no` 两轮对照下用 `report_shown` 验证 API 状态与 `report-toggle` 双向生效 |
 | 单测 | `tools/sub-style-test.lua` **T52**（v1.0.13） | OSD 报告不再含「内封字幕轨：…」；`internal_tracks.{total,checked,current_id,current_is_internal,pending}` 随切轨记账 |
 | 真机 E2E | `tools/sub-style-probe-reinspect.lua` + 第 5k 组（v1.0.13） | 真实 mpv 下 `internal_tracks` 可读、`total=1`，且切到外挂轨时 `current_is_internal=false` |
+| 单测 | `tools/sub-style-test.lua` **T60**（v1.0.15） | `get-state` 快照含只读 `ass_y_limit`，且三条来源的 `ass_y_ratio` 恒 ≤ `ass_y_limit`；非法 conf 值回退 `1.06` |
+| 真机 E2E | `tools/sub-style-probe-bounds.lua` + 第 5m 组（v1.0.15） | 带 / 不带内嵌黑边两夹具，连续下移到 pos 150 仍须「像素数 ≥ 基线 75% + 盒高不缩水 + `y1 <= h-1`」，并读回 `state.ass_y_limit=1.06` |
 | 语法/配置 | `lua-syntax-check.lua` / `sub-style-conf-verify.py` | 全量 Lua 语法、conf 键集合对齐 |
 
 ## 7. 版本与兼容承诺

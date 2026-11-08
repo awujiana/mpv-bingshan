@@ -17,7 +17,7 @@
 | --- | --- | --- |
 | `mpv.conf` / `input.conf` / `menu.conf` / `manager.json` | 播放器主配置与中文菜单化键位 | ✅ |
 | `scripts/` | mpv Lua 脚本目录（含两个 submodule 展开后的实体文件） | ✅ |
-| `scripts/uosc_subtitle_style.lua` | **核心自研脚本**，文件头 `-- @version: 1.0.13` 是本地版本依据 | ✅ |
+| `scripts/uosc_subtitle_style.lua` | **核心自研脚本**，文件头 `-- @version: 1.0.15` 是本地版本依据 | ✅ |
 | `scripts/uosc_updater.lua` | 自更新驱动；只做调度与 OSD，核心逻辑在 `script-modules/updater.lua` | ✅ |
 | `scripts/uosc_danmaku/` / `scripts/uosc_staff_credits/` | 两个 submodule（开发态是 gitlink，发布态展开为实体文件） | ✅ 实体文件 |
 | `script-modules/updater.lua` | 公共自更新模块副本，与 `awujiana/mpv-script-updater` **字节一致** | ✅ |
@@ -50,9 +50,9 @@
 
 ## 改动前检查
 
-- **改 Lua 脚本**：`../luajit.exe tools/lua-syntax-check.lua`（`FAIL 0`），再跑 `../luajit.exe tools/sub-style-test.lua`（`pass=328 fail=0 ALL_OK`）。
+- **改 Lua 脚本**：`../luajit.exe tools/lua-syntax-check.lua`（222 个文件、`FAIL 0`），再跑 `../luajit.exe tools/sub-style-test.lua`（`pass=446 fail=0 ALL_OK`）。
 - **改 conf**：`python tools/sub-style-conf-verify.py`（`SUMMARY sub-style-conf-verify PASS fail=0`）。
-- **改样式 / 黑边 / API**：加跑 `/c/Python314/python.exe tools/sub-style-e2e.py`（`SUMMARY sub-style-e2e PASS fail=0`、`PROBE SUMMARY pass=21 fail=0`）；新增行为必须同时新增单测与真机断言。
+- **改样式 / 黑边 / API**：加跑 `/c/Python314/python.exe tools/sub-style-e2e.py`（`SUMMARY sub-style-e2e PASS fail=0`、325 条 PASS，含 5m 画面边界守护两轮各 18 项）；新增行为必须同时新增单测与真机断言。
 - **改自更新**：`../luajit.exe tools/updater-test.lua`（`PASS=72 FAIL=0`）、`/c/Python314/python.exe tools/updater-e2e.py`、`/c/Python314/python.exe tools/updater-mutation-test.py`（`ALL_KILLED` 且源文件按字节还原）。
 - **改 README / 文档**：对照技能 `awujiana-readme-style`，核对徽章、双名标题、锚点、底部三节；跑 `python scripts/update_badges.py --check`。
 - **改发布内容**：`/c/Python314/python.exe tools/publish-mpv-bingshan.py verify` → `VERIFY excluded_in_index=0 gitlinks=0`、`VERIFY OK`。

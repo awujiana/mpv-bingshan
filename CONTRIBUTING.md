@@ -52,7 +52,7 @@
 
    ```bash
    ../luajit.exe tools/lua-syntax-check.lua
-   ../luajit.exe tools/sub-style-test.lua                    # 328 条断言
+   ../luajit.exe tools/sub-style-test.lua                    # 446 条断言
    python tools/sub-style-conf-verify.py                     # conf 静态门禁
    /c/Python314/python.exe tools/sub-style-e2e.py            # 真机 E2E
    ../luajit.exe tools/updater-test.lua                      # 72 条断言
